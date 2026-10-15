@@ -22,6 +22,11 @@ let selectedDevice = null;
 let activeDevice = null;
 let activeRole = null;
 
+function skin(name, detail) {
+  const hook = window.forkashiSkin;
+  if (hook && typeof hook[name] === "function") hook[name](detail);
+}
+
 function line(cls, msg) {
   const li = document.createElement("li");
   li.className = cls;
@@ -44,6 +49,7 @@ async function refresh() {
     bill.role === "A"
       ? "Send USDT checks for an invoice on Bill A before reading it."
       : "Receive USDT stages an invoice when empty, or imports a received consignment.";
+  skin("bill", bill);
 }
 
 function renderDevice(device) {
@@ -159,6 +165,7 @@ scanDevice.addEventListener("click", async () => {
       : "No authorized bills found. Check power and keep the bill nearby.";
   } catch (error) {
     deviceMessage.textContent = error.message;
+    skin("buzz");
   } finally {
     scanDevice.disabled = false;
   }
@@ -192,6 +199,7 @@ connectDevice.addEventListener("click", async () => {
     renderDevice(data.device);
   } catch (error) {
     deviceMessage.textContent = error.message;
+    skin("buzz");
   } finally {
     connectDevice.disabled =
       !selectedDevice && !(activeDevice && activeDevice.active_address);
@@ -212,8 +220,10 @@ async function runWorkflow(path) {
     workflowMessage.textContent = data.reply || data.error || "Step completed.";
     line("bot", workflowMessage.textContent);
     if (data.pending) showConfirm(data.pending);
+    if (data.error || data.ok === false) skin("buzz");
   } catch (error) {
     workflowMessage.textContent = error.message;
+    skin("buzz");
   } finally {
     await refresh();
   }
@@ -235,6 +245,7 @@ registerDevice.addEventListener("click", async () => {
   } catch (error) {
     deviceMessage.textContent = error.message;
     registerDevice.disabled = false;
+    skin("buzz");
   }
 });
 
@@ -271,6 +282,7 @@ form.addEventListener("submit", async (event) => {
   });
   const data = await res.json();
   line("bot", data.reply || data.error || "Request completed.");
+  if (data.error || data.ok === false) skin("buzz");
   if (data.pending) showConfirm(data.pending);
   await refresh();
 });
@@ -292,6 +304,10 @@ confirmForm.addEventListener("submit", async (event) => {
       dialog.close();
       pendingId = null;
       confirmationPhrase.value = "";
+      if (data.completed) skin("coin");
+      else skin("buzz");
+    } else {
+      skin("buzz");
     }
     line(
       "bot",

@@ -1,0 +1,146 @@
+{
+  "none": {
+    "role": "A",
+    "identity": "bill-a-demo",
+    "status": "idle",
+    "cents": 500,
+    "pending": null,
+    "receipts": [],
+    "recovery": null,
+    "mode": "live-rgb-tap",
+    "settlement": "not-broadcast",
+    "asset_id": null,
+    "asset_precision": null,
+    "device": {
+      "registered": true,
+      "active_address": "AA:BB:CC:DD:EE:01",
+      "device": {
+        "name": "RgbBill",
+        "identity": "bill-a-demo",
+        "address": "AA:BB:CC:DD:EE:01"
+      },
+      "connection": {
+        "connected": true,
+        "address": "AA:BB:CC:DD:EE:01"
+      }
+    }
+  },
+  "sent": {
+    "role": "A",
+    "identity": "bill-a-demo",
+    "status": "consignment-staged",
+    "cents": 0,
+    "pending": null,
+    "receipts": [
+      {
+        "action": "rgb-send",
+        "status": "consignment-staged",
+        "settlement": "broadcast"
+      }
+    ],
+    "recovery": null,
+    "mode": "live-rgb-tap",
+    "settlement": "broadcast",
+    "device": {
+      "registered": true,
+      "active_address": "AA:BB:CC:DD:EE:01",
+      "device": {
+        "name": "RgbBill",
+        "identity": "bill-a-demo",
+        "address": "AA:BB:CC:DD:EE:01"
+      },
+      "connection": {
+        "connected": true,
+        "address": "AA:BB:CC:DD:EE:01"
+      }
+    }
+  },
+  "accepted": {
+    "role": "B",
+    "identity": "bill-b-demo",
+    "status": "consignment-imported",
+    "cents": 500,
+    "pending": null,
+    "receipts": [
+      {
+        "action": "consignment-import",
+        "status": "consignment-imported",
+        "settlement": "waiting-confirmations"
+      }
+    ],
+    "recovery": null,
+    "mode": "live-rgb-tap",
+    "settlement": "waiting-confirmations",
+    "device": {
+      "registered": true,
+      "active_address": "AA:BB:CC:DD:EE:02",
+      "device": {
+        "name": "RgbBill",
+        "identity": "bill-b-demo",
+        "address": "AA:BB:CC:DD:EE:02"
+      },
+      "connection": {
+        "connected": true,
+        "address": "AA:BB:CC:DD:EE:02"
+      }
+    }
+  },
+  "settled": {
+    "role": "B",
+    "identity": "bill-b-demo",
+    "status": "settled",
+    "cents": 500,
+    "pending": null,
+    "receipts": [
+      {
+        "action": "wallet-refresh",
+        "status": "settled",
+        "settlement": "settled"
+      }
+    ],
+    "recovery": null,
+    "mode": "live-rgb-tap",
+    "settlement": "settled",
+    "device": {
+      "registered": true,
+      "active_address": "AA:BB:CC:DD:EE:02",
+      "device": {
+        "name": "RgbBill",
+        "identity": "bill-b-demo",
+        "address": "AA:BB:CC:DD:EE:02"
+      },
+      "connection": {
+        "connected": true,
+        "address": "AA:BB:CC:DD:EE:02"
+      }
+    }
+  },
+  "attention": {
+    "role": "B",
+    "identity": "bill-b-demo",
+    "status": "consignment-import-recovery-required",
+    "cents": 0,
+    "pending": null,
+    "receipts": [],
+    "recovery": {
+      "action": "retry-consignment-import",
+      "endpoint": "/api/rgb/import",
+      "retry_send": false
+    },
+    "mode": "live-rgb-tap",
+    "settlement": "waiting-import",
+    "device": {
+      "registered": true,
+      "active_address": "AA:BB:CC:DD:EE:02",
+      "device": {
+        "name": "RgbBill",
+        "identity": "bill-b-demo",
+        "address": "AA:BB:CC:DD:EE:02"
+      },
+      "connection": {
+        "connected": true,
+        "address": "AA:BB:CC:DD:EE:02"
+      }
+    }
+  }
+}
