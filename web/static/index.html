@@ -3,17 +3,86 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>RGB cash bill — dock</title>
+  <title>Forkashi — cash bill dock</title>
+  <link rel="preload" href="/fonts/PressStart2P-Regular.ttf" as="font" type="font/ttf" crossorigin />
   <link rel="stylesheet" href="/app.css" />
 </head>
 <body>
-  <main>
-    <header>
-      <p class="kicker">Dock · live RGB tap · Mutinynet</p>
-      <h1>Cash bill</h1>
-      <p id="meta">loading…</p>
-    </header>
-    <section class="device-panel" aria-labelledby="device-heading">
+  <a class="skip" href="#desk">Skip to desk</a>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="mascot" viewBox="0 0 32 32" aria-hidden="true" shape-rendering="crispEdges">
+        <rect x="1" y="7" width="20" height="18" fill="#1a1430"/>
+        <rect x="2" y="8" width="18" height="16" fill="#f7f3e8"/>
+        <rect x="2" y="11" width="18" height="2" fill="#1f8a5b"/>
+        <rect x="4" y="16" width="7" height="2" fill="#1a1430"/>
+        <rect x="4" y="19" width="5" height="2" fill="#1a1430"/>
+        <g class="mark-coin">
+          <rect x="12" y="16" width="6" height="6" fill="#f0b429"/>
+          <rect x="13" y="17" width="4" height="4" fill="#ffe7a3"/>
+          <rect x="14" y="18" width="2" height="2" fill="#1a1430"/>
+        </g>
+        <rect x="18" y="1" width="2" height="10" fill="#d5dbe8"/>
+        <rect x="22" y="1" width="2" height="10" fill="#d5dbe8"/>
+        <rect x="26" y="1" width="2" height="10" fill="#d5dbe8"/>
+        <rect x="18" y="11" width="10" height="2" fill="#8e98ad"/>
+        <rect x="22" y="13" width="2" height="16" fill="#d5dbe8"/>
+        <rect x="22" y="27" width="2" height="2" fill="#8e98ad"/>
+      </svg>
+      <div class="brand-text">
+        <p class="kicker">Dock · live RGB tap · Mutinynet</p>
+        <h1>
+          <span class="wordmark">Forkashi</span>
+          <span class="product">Cash bill</span>
+        </h1>
+        <p id="meta">loading…</p>
+        <p class="plain">
+          Mutinynet is test money. It has no real value.
+          <a class="pixel-btn tiny" href="#card-mutinynet" data-learn="mutinynet">Pause &amp; learn</a>
+        </p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <button id="sound-toggle" class="sound-toggle" type="button" aria-pressed="false">Sound: OFF</button>
+      <div class="lang-switch" role="group" aria-label="Language">
+        <button type="button" id="lang-en" class="lang" aria-pressed="true">EN</button>
+        <button type="button" id="lang-es" class="lang" aria-pressed="false">ES</button>
+      </div>
+      <a id="howto-open" class="pixel-btn" href="#howto-static" aria-label="How it works">?</a>
+    </div>
+  </header>
+
+  <dialog id="splash" aria-labelledby="splash-title" aria-describedby="splash-body">
+    <div class="splash-card">
+      <p id="splash-kicker" class="splash-kicker">Forkashi</p>
+      <h2 id="splash-title" tabindex="-1">Press start</h2>
+      <p id="splash-body">A practice desk for a $5 test payment. The money is not real.</p>
+      <div class="splash-actions">
+        <button id="splash-start" type="button">Press start</button>
+        <button id="splash-skip" class="secondary" type="button">Skip</button>
+        <button id="splash-sound" class="sound-toggle" type="button" aria-pressed="false">Sound: OFF</button>
+      </div>
+    </div>
+  </dialog>
+
+  <main id="desk">
+    <section id="pay-state" class="px pay-state" role="status" aria-live="polite" data-kind="loading">
+      <div class="pay-head">
+        <p class="label">Payment</p>
+        <a class="pixel-btn tiny" href="#card-settlement" data-learn="settlement">Pause &amp; learn</a>
+      </div>
+      <div class="pay-row">
+        <span id="pay-icon" aria-hidden="true"></span>
+        <div>
+          <p id="pay-kicker" class="pay-kicker">Desk</p>
+          <p id="pay-title">Waiting for this desk…</p>
+          <p id="pay-detail">The payment state shows up here.</p>
+        </div>
+      </div>
+      <a class="text-link" href="#card-accepted" data-learn="accepted">Why isn't accepted the same as settled?</a>
+    </section>
+
+    <section class="px device-panel" aria-labelledby="device-heading">
       <div class="device-heading-row">
         <div>
           <p class="label">Physical bill</p>
@@ -21,17 +90,17 @@
         </div>
         <span id="device-badge" class="device-badge">Not registered</span>
       </div>
+      <p class="plain">
+        The puck is the small gadget with a screen and a touch pad. This page is the laptop dock.
+        <a class="pixel-btn tiny" href="#card-puck" data-learn="puck">Pause &amp; learn</a>
+      </p>
       <p id="device-summary" class="device-summary">
         Scan for a nearby RgbBill advertising the authorized dock service.
       </p>
       <div class="device-actions">
         <button id="scan-device" type="button">Scan</button>
-        <button id="connect-device" class="secondary" type="button" disabled>
-          Connect
-        </button>
-        <button id="register-device" type="button" disabled>
-          Register selected
-        </button>
+        <button id="connect-device" class="secondary" type="button" disabled>Connect</button>
+        <button id="register-device" type="button" disabled>Register selected</button>
       </div>
       <fieldset id="device-list" aria-live="polite">
         <legend>Authorized nearby bills</legend>
@@ -44,14 +113,27 @@
         saved per dock role; transfers reconnect to it automatically.
       </p>
     </section>
-    <section class="note" aria-live="polite">
+
+    <section class="px note" aria-live="polite">
       <p class="label">Wallet balance</p>
       <p id="denomination">$0.00</p>
+      <p class="label">Technical status</p>
       <p id="status">idle</p>
     </section>
-    <section class="workflow" aria-labelledby="workflow-heading">
+
+    <section class="px workflow" aria-labelledby="workflow-heading">
       <p class="label">One next action</p>
       <h2 id="workflow-heading">Move $5.00 USDT</h2>
+      <p class="plain">
+        This $5 test payment is a check: a promise you hand over in person.
+        <a class="pixel-btn tiny" href="#card-check" data-learn="check">Pause &amp; learn</a>
+      </p>
+      <ol class="steps" id="step-rail" aria-label="How a payment moves">
+        <li data-step="1"><span class="step-label">Receive</span><span class="cursor" aria-hidden="true"></span></li>
+        <li data-step="2"><span class="step-label">Tap</span><span class="cursor" aria-hidden="true"></span></li>
+        <li data-step="3"><span class="step-label">Confirm</span><span class="cursor" aria-hidden="true"></span></li>
+        <li data-step="4"><span class="step-label">Settle</span><span class="cursor" aria-hidden="true"></span></li>
+      </ol>
       <p id="workflow-help">
         Connect verifies what is physically stored on the bill before any read or write.
       </p>
@@ -61,22 +143,87 @@
       </div>
       <p id="workflow-message" aria-live="polite"></p>
     </section>
-    <section class="chat">
+
+    <section class="px chat">
       <details>
         <summary>Advanced text commands</summary>
-      <ol id="log"></ol>
-      <form id="form">
-        <label for="text">Assistant</label>
-        <input id="text" name="text" autocomplete="off" placeholder="bill for $5" />
-        <button id="send" type="submit">Send</button>
-      </form>
+        <ol id="log"></ol>
+        <form id="form">
+          <label for="text">Assistant</label>
+          <input id="text" name="text" autocomplete="off" placeholder="bill for $5" />
+          <button id="send" type="submit">Send</button>
+        </form>
       </details>
     </section>
+
+    <section class="px static-help" id="static-help">
+      <h2>Pause and learn</h2>
+      <p>Game paused. Nothing is sent while you read.</p>
+      <details id="card-check">
+        <summary>What is a "check"?</summary>
+        <p>A check is a promise to pay that you hand to someone in person. It says "I will pay you $5."</p>
+        <p>In this app, the check is a $5 USDT test payment.</p>
+      </details>
+      <details id="card-puck">
+        <summary>What is a "puck"?</summary>
+        <p>A puck is the small gadget with a screen and a touch pad. People also call it the bill.</p>
+        <p>It carries the payment from one person to the other over Bluetooth, tap to tap.</p>
+        <p>It does not hold secret keys. The laptop dock does the wallet work.</p>
+      </details>
+      <details id="card-settlement">
+        <summary>What is "settlement"?</summary>
+        <p>Settlement is the last step. The payment is written down on the Bitcoin test network, Mutinynet.</p>
+        <p>Until that happens, the payment is not final.</p>
+      </details>
+      <details id="card-mutinynet">
+        <summary>What is Mutinynet / "test money"?</summary>
+        <p>Mutinynet is a practice network. The money on it has no real value.</p>
+        <p>You use it to learn the steps without risking real money.</p>
+      </details>
+      <details id="card-phrase">
+        <summary>What does the typed confirmation phrase do?</summary>
+        <p>It is a speed bump. You must type the exact words before money can be sent.</p>
+        <p>That way a stray click cannot send the payment.</p>
+      </details>
+      <details id="card-accepted">
+        <summary>What are "accepted" and "settled"?</summary>
+        <p>Accepted means you have the check. Settled means the blockchain has confirmed it. They are not the same.</p>
+        <p>Accepted — not yet settled on-chain means you have the check, and the blockchain has not confirmed it yet.</p>
+        <p>In this test version, the receiving dock still needs internet to import the check. Later versions aim to let you accept a check with no internet and settle afterward.</p>
+        <p>Why isn't accepted the same as settled? Until the blockchain confirms the payment, the sender could in theory cancel it by spending the same coins somewhere else.</p>
+      </details>
+    </section>
+
+    <details class="px" id="howto-static">
+      <summary>How it works</summary>
+      <ol>
+        <li>Receiver picks Receive. The person who will get the money presses Receive USDT on their dock.</li>
+        <li>Tap the bills together. Hold the two pucks so they touch. They pass the check over Bluetooth.</li>
+        <li>Sender types the phrase. The person who pays types the exact words. A wrong phrase sends nothing.</li>
+        <li>Wait for settlement. Accepted means the check arrived. Settled means the test network confirmed it.</li>
+      </ol>
+    </details>
   </main>
+
+  <footer class="notice">
+    <h2>Notice</h2>
+    <p>Based on RGB cash bill by Edwin Kestler (github.com/EdwinKestler/bill). Forkashi skin by JaguarUTZ.</p>
+    <p>Press Start 2P © 2012 The Press Start 2P Project Authors (Cody Boisclair), with Reserved Font Name “Press Start 2P”. Licensed under the SIL Open Font License 1.1 (fonts/OFL.txt).</p>
+    <p>All sounds are generated in the browser. Original composition. No audio files.</p>
+  </footer>
+
+  <noscript>
+    <p class="noscript-note">Scripts are off. You can still read the guide above. Scanning and sending need JavaScript.</p>
+  </noscript>
+
   <dialog id="confirm">
     <form method="dialog" id="confirm-form">
       <h2>Confirm Mutinynet broadcast</h2>
       <p id="confirm-note"></p>
+      <p class="confirm-help">
+        Nothing is sent until you type the phrase exactly.
+        <a class="pixel-btn tiny" href="#card-phrase" data-learn="phrase">Pause &amp; learn</a>
+      </p>
       <pre id="confirm-plan"></pre>
       <label for="confirmation-phrase">Type the exact confirmation phrase</label>
       <input
@@ -91,6 +238,61 @@
       </menu>
     </form>
   </dialog>
+
+  <dialog id="learn-dialog" aria-labelledby="learn-pause learn-title">
+    <p id="learn-kicker" class="pause-kicker">Paused</p>
+    <p id="learn-pause" class="pause-banner">Game paused. Nothing is sent while you read.</p>
+    <h2 id="learn-title" tabindex="-1"></h2>
+    <div id="learn-body"></div>
+    <button id="learn-close" type="button">Close</button>
+  </dialog>
+
+  <dialog id="howto-dialog" aria-labelledby="howto-title">
+    <h2 id="howto-title" tabindex="-1">How it works</h2>
+    <p id="howto-intro"></p>
+    <ol id="howto-list"></ol>
+    <button id="howto-close" type="button">Close</button>
+  </dialog>
+
+  <div id="howto-arts" hidden>
+    <svg class="pixel-art" viewBox="0 0 32 32" aria-hidden="true" shape-rendering="crispEdges">
+      <rect width="32" height="32" fill="#16122e"/>
+      <rect x="8" y="3" width="16" height="8" fill="#f0b429"/>
+      <rect x="14" y="11" width="4" height="4" fill="#f7f3e8"/>
+      <rect x="7" y="16" width="18" height="12" fill="#f7f3e8"/>
+      <rect x="7" y="16" width="18" height="2" fill="#1a1430"/>
+      <rect x="10" y="21" width="12" height="3" fill="#1f8a5b"/>
+    </svg>
+    <svg class="pixel-art" viewBox="0 0 32 32" aria-hidden="true" shape-rendering="crispEdges">
+      <rect width="32" height="32" fill="#16122e"/>
+      <rect x="1" y="8" width="12" height="16" fill="#f7f3e8"/>
+      <rect x="1" y="8" width="12" height="2" fill="#1a1430"/>
+      <rect x="19" y="8" width="12" height="16" fill="#f7f3e8"/>
+      <rect x="19" y="8" width="12" height="2" fill="#1a1430"/>
+      <rect x="14" y="14" width="4" height="4" fill="#f0b429"/>
+    </svg>
+    <svg class="pixel-art" viewBox="0 0 32 32" aria-hidden="true" shape-rendering="crispEdges">
+      <rect width="32" height="32" fill="#16122e"/>
+      <rect x="2" y="10" width="28" height="12" fill="#1a1430"/>
+      <rect x="4" y="12" width="24" height="8" fill="#f7f3e8"/>
+      <rect x="6" y="14" width="3" height="4" fill="#1a1430"/>
+      <rect x="11" y="14" width="3" height="4" fill="#1a1430"/>
+      <rect class="blink" x="16" y="14" width="3" height="4" fill="#1f8a5b"/>
+    </svg>
+    <svg class="pixel-art" viewBox="0 0 32 32" aria-hidden="true" shape-rendering="crispEdges">
+      <rect width="32" height="32" fill="#16122e"/>
+      <rect x="2" y="12" width="6" height="6" fill="#f7f3e8"/>
+      <rect x="13" y="12" width="6" height="6" fill="#f7f3e8"/>
+      <rect x="24" y="12" width="6" height="6" fill="#b6f3d4"/>
+      <rect x="8" y="14" width="5" height="2" fill="#f0b429"/>
+      <rect x="19" y="14" width="5" height="2" fill="#f0b429"/>
+      <rect x="25" y="14" width="2" height="2" fill="#0e3d2a"/>
+      <rect x="27" y="16" width="2" height="2" fill="#0e3d2a"/>
+    </svg>
+  </div>
+
+  <script src="/copy.js"></script>
+  <script src="/skin.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
