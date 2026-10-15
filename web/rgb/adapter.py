@@ -197,8 +197,18 @@ class RgbBillAdapter:
             expiration_timestamp=int(self._clock()) + expires_in_seconds,
         )
         with self._lock:
+            self._prune_locked(int(self._clock()))
             self._plans[plan.plan_id] = _PlanState(plan=plan)
         return plan
+
+    def discard_plan(self, plan_id: str) -> bool:
+        """Drop a plan that has not been consumed. No transaction is built."""
+        with self._lock:
+            state = self._plans.get(plan_id)
+            if state is None or state.consumed:
+                return False
+            self._plans.pop(plan_id, None)
+            return True
 
     def confirm_transfer(self, plan_id: str) -> TransferPlan:
         """Mark a displayed plan confirmed; this method itself never spends."""
@@ -207,7 +217,7 @@ class RgbBillAdapter:
             if state is None or state.consumed:
                 raise ConfirmationRequired("unknown or already-consumed transfer plan")
             if state.plan.expiration_timestamp <= int(self._clock()):
-                state.consumed = True
+                self._plans.pop(plan_id, None)
                 raise ConfirmationRequired("transfer plan expired before confirmation")
             state.confirmed = True
             return state.plan
@@ -219,10 +229,11 @@ class RgbBillAdapter:
             if state is None or not state.confirmed or state.consumed:
                 raise ConfirmationRequired("a fresh explicit confirmation is required")
             if state.plan.expiration_timestamp <= int(self._clock()):
-                state.consumed = True
+                self._plans.pop(plan_id, None)
                 raise ConfirmationRequired("confirmed transfer plan has expired")
             state.consumed = True
             plan = state.plan
+            self._plans.pop(plan_id, None)
 
         current_balance = self._backend.spendable_balance(plan.asset_id)
         if current_balance != plan.balance_before:
@@ -279,8 +290,31 @@ class RgbBillAdapter:
         """Refresh this process's wallet without opening a second owner."""
         return self._backend.refresh()
 
+    def transfer_statuses(self, asset_id: str) -> Mapping[int, str]:
+        """Return the wallet's recorded status for each transfer of one asset.
+
+        This is the wallet's last recorded view. It is not a new chain proof
+        and it does not show that an unconfirmed spend is still the mempool's
+        preferred transaction.
+        """
+        if not asset_id:
+            raise AdapterError("asset_id is required")
+        method = getattr(self._backend, "transfer_statuses", None)
+        if method is None:
+            raise AdapterError("wallet backend cannot report transfer status")
+        return method(asset_id)
+
     def close(self) -> None:
         self._backend.close()
+
+    def _prune_locked(self, now: int) -> None:
+        stale = [
+            plan_id
+            for plan_id, state in self._plans.items()
+            if state.consumed or state.plan.expiration_timestamp <= now
+        ]
+        for plan_id in stale:
+            self._plans.pop(plan_id, None)
 
     def _artifact(self, result: BackendSendResult) -> ConsignmentArtifact:
         path = result.consignment_path.resolve()

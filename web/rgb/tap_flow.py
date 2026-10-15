@@ -54,6 +54,9 @@ class InvoiceTransferPlan:
     artifact: StoredArtifact
     received_session_id: int | None
     plan: TransferPlan
+    # Secret the human must type. Empty only for objects built outside the web
+    # service; the web service refuses to confirm an empty secret.
+    confirmation_phrase: str = ""
 
 
 class ChunkGateway(Protocol):

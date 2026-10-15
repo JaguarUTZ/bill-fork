@@ -1,0 +1,12 @@
+RGB cash bill
+
+The original project is by Edwin Kestler:
+https://github.com/EdwinKestler/bill
+
+This tree is a fork. Credit for the bill, the dock, and the tap protocol
+belongs to that project. Changes on the audit-fix branch do not replace
+that credit.
+
+No LICENSE file was present upstream at commit 303134c. This NOTICE does not
+grant a license. A license still has to be requested from Edwin Kestler
+before reuse or redistribution beyond what GitHub's fork terms already allow.

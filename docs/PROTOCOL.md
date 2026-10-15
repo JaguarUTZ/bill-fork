@@ -96,6 +96,8 @@ kind (1 byte: empty/unknown `0`, invoice `1`, consignment `2`), reserved zero
 (uint32). Docks decode v1 for upgrade compatibility, but direction `3` is
 valid only in v2. A known complete blocked artifact preserves its kind,
 session, size, and denomination. An untyped orphan uses zero for those fields.
+Denomination cents in this record are display metadata, not an authorization
+of the amount the dock will broadcast or credit.
 
 Dock core exposes one non-production display command:
 `diag:display:empty`. It shows `DISPLAY TEST` without a numeric amount and
@@ -206,7 +208,7 @@ Tap metadata is little-endian:
 | reserved | 1 | Must be zero |
 | session_id | 4 | Same session identifier carried by every chunk frame |
 | size | 4 | Exact artifact byte count, maximum 655360 |
-| denomination_cents | 4 | Amount to display only while this artifact exists |
+| denomination_cents | 4 | Unauthenticated amount to display only while this artifact exists. Docks must not treat it as the amount that will be broadcast or credited. |
 
 `CHUNK_OUT` and `CHUNK_IN` reuse the dock service's binary chunk-v1 envelope,
 CRC32, strict ordering, exact duplicate ACK behavior, and stop-and-wait retry
@@ -227,9 +229,14 @@ continues to fit one legacy 31-byte PDU. Tap discovery uses the `RgbBill*`
 name and validates the tap service after connection; no invoice, consignment,
 amount, or session metadata is placed in advertising data.
 
-Security: dock link may request bonding (`ENC_NO_MITM`) like the Waveshare
-gateway. Tap link is short-lived; Mutinynet demo may stay unauthenticated.
-Mainnet would need a pairing story.
+Security: dock and tap characteristics require encrypted permissions and Just
+Works bonding (`ESP_LE_AUTH_REQ_SC_BOND`, IO capability none). Unpaired GATT
+reads and writes are rejected. This does not authenticate the peer. There is
+no passkey and no numeric comparison, so a device that completes pairing can
+still write an invoice. `denomination_cents` stays an unauthenticated display
+field. The dock pairs before it reads or writes. Mainnet would still need a
+real pairing story; these limits are spelled out in
+[CHECK-GUARANTEES.md](CHECK-GUARANTEES.md).
 
 Both current bill profiles sample the TTP223 output on GPIO12 as an active-high
 digital input. GPIO12 is also the ESP32 MTDI flash-voltage strap, so each

@@ -6,6 +6,7 @@
 #include <BLEUtils.h>
 #include <SPIFFS.h>
 #include <TapProtocol.h>
+#include <bill_ble_security.h>
 #include <cstring>
 
 #include "config.h"
@@ -119,6 +120,7 @@ void DockGatt::begin() {
   }
 
   BLEDevice::init(BLE_DEVICE_NAME);
+  configureBillBleSecurity();
   BLEDevice::setMTU(247);
   server_ = BLEDevice::createServer();
   server_->setCallbacks(&callbacks_);
@@ -127,35 +129,42 @@ void DockGatt::begin() {
       BLEUUID(BLE_UUIDs::DOCK_SERVICE), DOCK_SERVICE_HANDLES);
   BLECharacteristic* identity = service->createCharacteristic(
       BLE_UUIDs::IDENTITY, BLECharacteristic::PROPERTY_READ);
+  requireEncrypted(identity, ESP_GATT_PERM_READ_ENCRYPTED);
   identity->setValue(BLE_IDENTITY);
 
   statusCharacteristic_ = service->createCharacteristic(
       BLE_UUIDs::STATUS,
       BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+  requireEncrypted(statusCharacteristic_, ESP_GATT_PERM_READ_ENCRYPTED);
   statusCharacteristic_->setValue("idle");
-  statusCharacteristic_->addDescriptor(new BLE2902());
+  statusCharacteristic_->addDescriptor(encryptedCccd());
 
   denominationCharacteristic_ = service->createCharacteristic(
       BLE_UUIDs::DENOMINATION,
       BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+  requireEncrypted(denominationCharacteristic_, ESP_GATT_PERM_READ_ENCRYPTED);
   denominationCharacteristic_->setValue("0");
-  denominationCharacteristic_->addDescriptor(new BLE2902());
+  denominationCharacteristic_->addDescriptor(encryptedCccd());
 
   BLECharacteristic* command = service->createCharacteristic(
       BLE_UUIDs::CMD, BLECharacteristic::PROPERTY_WRITE);
+  requireEncrypted(command, ESP_GATT_PERM_WRITE_ENCRYPTED);
   command->setCallbacks(&commandCallbacks_);
 
   BLECharacteristic* chunkIn = service->createCharacteristic(
       BLE_UUIDs::CHUNK_IN, BLECharacteristic::PROPERTY_WRITE);
+  requireEncrypted(chunkIn, ESP_GATT_PERM_WRITE_ENCRYPTED);
   chunkIn->setCallbacks(&chunkCallbacks_);
 
   chunkOutCharacteristic_ = service->createCharacteristic(
       BLE_UUIDs::CHUNK_OUT, BLECharacteristic::PROPERTY_NOTIFY);
-  chunkOutCccd_ = new BLE2902();
+  requireEncrypted(chunkOutCharacteristic_, ESP_GATT_PERM_READ_ENCRYPTED);
+  chunkOutCccd_ = encryptedCccd();
   chunkOutCharacteristic_->addDescriptor(chunkOutCccd_);
 
   artifactMetaCharacteristic_ = service->createCharacteristic(
       BLE_UUIDs::ARTIFACT_META, BLECharacteristic::PROPERTY_READ);
+  requireEncrypted(artifactMetaCharacteristic_, ESP_GATT_PERM_READ_ENCRYPTED);
   uint8_t emptyArtifact[16] = {2};
   artifactMetaCharacteristic_->setValue(emptyArtifact, sizeof(emptyArtifact));
 

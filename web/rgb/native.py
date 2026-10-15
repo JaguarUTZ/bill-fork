@@ -24,6 +24,24 @@ def _enum_name(value: object) -> str:
     return str(value).split(".")[-1].lower()
 
 
+def statuses_from_transfers(transfers: object) -> Mapping[int, str]:
+    """Read ``batch_transfer_idx`` and ``status`` from rgb-lib transfer rows.
+
+    The attribute is ``status`` on rgb-lib 0.3.0b7 transfer objects. A missing
+    status is an error rather than a guess that the transfer settled.
+    """
+    statuses: dict[int, str] = {}
+    for transfer in transfers:  # type: ignore[union-attr]
+        status = getattr(transfer, "status", None)
+        if status is None:
+            raise RgbLibUnavailable("rgb-lib transfer is missing a status field")
+        batch = getattr(transfer, "batch_transfer_idx", None)
+        if batch is None:
+            raise RgbLibUnavailable("rgb-lib transfer is missing batch_transfer_idx")
+        statuses[int(batch)] = _enum_name(status)
+    return statuses
+
+
 class RgbLibBackend:
     """Own one native wallet, one Online handle, and its process lock."""
 
@@ -187,6 +205,9 @@ class RgbLibBackend:
             int(batch_idx): _enum_name(value.updated_status)
             for batch_idx, value in refreshed.items()
         }
+
+    def transfer_statuses(self, asset_id: str) -> Mapping[int, str]:
+        return statuses_from_transfers(self._wallet.list_transfers(asset_id))
 
     def refresh(self) -> Mapping[int, str]:
         refreshed = self._wallet.refresh(self._online, None, [], False)

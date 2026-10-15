@@ -5,6 +5,7 @@
 #include <BLEDevice.h>
 #include <BLERemoteService.h>
 #include <SPIFFS.h>
+#include <bill_ble_security.h>
 #include <cstring>
 
 #include "config.h"
@@ -67,19 +68,24 @@ void TapGatt::begin(BLEServer* server) {
     return;
   }
 
+  configureBillBleSecurity();
   BLEService* service = server_->createService(
       BLEUUID(BLE_UUIDs::TAP_SERVICE), TAP_SERVICE_HANDLES);
   metadataCharacteristic_ = service->createCharacteristic(
       BLE_UUIDs::TAP_META, BLECharacteristic::PROPERTY_READ);
+  requireEncrypted(metadataCharacteristic_, ESP_GATT_PERM_READ_ENCRYPTED);
   BLECharacteristic* control = service->createCharacteristic(
       BLE_UUIDs::TAP_CONTROL, BLECharacteristic::PROPERTY_WRITE);
+  requireEncrypted(control, ESP_GATT_PERM_WRITE_ENCRYPTED);
   control->setCallbacks(&controlCallbacks_);
   BLECharacteristic* chunkIn = service->createCharacteristic(
       BLE_UUIDs::TAP_CHUNK_IN, BLECharacteristic::PROPERTY_WRITE);
+  requireEncrypted(chunkIn, ESP_GATT_PERM_WRITE_ENCRYPTED);
   chunkIn->setCallbacks(&chunkCallbacks_);
   tapChunkOutCharacteristic_ = service->createCharacteristic(
       BLE_UUIDs::TAP_CHUNK_OUT, BLECharacteristic::PROPERTY_NOTIFY);
-  tapChunkOutCharacteristic_->addDescriptor(new BLE2902());
+  requireEncrypted(tapChunkOutCharacteristic_, ESP_GATT_PERM_READ_ENCRYPTED);
+  tapChunkOutCharacteristic_->addDescriptor(encryptedCccd());
   service->start();
 
   if (xSemaphoreTake(mutex_, portMAX_DELAY) == pdTRUE) {
@@ -383,7 +389,10 @@ bool TapGatt::connectReceiver(const char* address,
     client_ = BLEDevice::createClient();
     client_->setClientCallbacks(&clientCallbacks_);
   }
-  Serial.printf("tap: qualifying peer %s RSSI=%d; connecting\n", address, rssi);
+  Serial.printf(
+      "tap: qualifying peer %s RSSI=%d; connecting "
+      "(encrypted link, Just Works, no peer authentication)\n",
+      address, rssi);
   if (!client_->connect(BLEAddress(address), addressType)) {
     Serial.println("tap: peer connection failed");
     setStatus("TAP RETRY");

@@ -21,6 +21,15 @@ let pendingId = null;
 let selectedDevice = null;
 let activeDevice = null;
 let activeRole = null;
+const sessionMeta = document.querySelector('meta[name="dock-session"]');
+const dockSession = sessionMeta ? sessionMeta.content : "";
+
+function apiHeaders() {
+  return {
+    "Content-Type": "application/json",
+    "X-Dock-Session": dockSession,
+  };
+}
 
 function line(cls, msg) {
   const li = document.createElement("li");
@@ -29,11 +38,25 @@ function line(cls, msg) {
   logEl.appendChild(li);
 }
 
+function statusText(bill) {
+  if (bill.settlement === "accepted-unsettled") {
+    const pending = bill.unsettled_cents
+      ? " ($" + (bill.unsettled_cents / 100).toFixed(2) + " not spendable)"
+      : "";
+    return "accepted, unsettled" + pending;
+  }
+  if (bill.settlement === "transfer-failed") return "transfer failed";
+  if (bill.settlement === "transfer-expired") return "transfer expired";
+  return bill.status;
+}
+
 async function refresh() {
-  const bill = await (await fetch("/api/bill")).json();
+  const bill = await (
+    await fetch("/api/bill", { headers: { "X-Dock-Session": dockSession } })
+  ).json();
   document.getElementById("denomination").textContent =
     "$" + (bill.cents / 100).toFixed(2);
-  document.getElementById("status").textContent = bill.status;
+  document.getElementById("status").textContent = statusText(bill);
   document.getElementById("meta").textContent =
     "role " + bill.role + " · " + bill.identity + " · " + bill.mode;
   renderDevice(bill.device);
@@ -137,7 +160,7 @@ function renderCandidates(devices) {
 async function postDevice(path, payload = {}) {
   const response = await fetch(path, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: apiHeaders(),
     body: JSON.stringify(payload),
   });
   const data = await response.json();
@@ -205,7 +228,7 @@ async function runWorkflow(path) {
   try {
     const response = await fetch(path, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: apiHeaders(),
       body: JSON.stringify({ cents: 500 }),
     });
     const data = await response.json();
@@ -240,20 +263,35 @@ registerDevice.addEventListener("click", async () => {
 
 function showConfirm(pending) {
   pendingId = pending.id;
-  confirmNote.textContent =
-    pending.note + " Type exactly: " + pending.confirmation_phrase;
-  confirmPlan.textContent = [
+  confirmNote.textContent = pending.confirmation_phrase
+    ? pending.note + " Type exactly: " + pending.confirmation_phrase
+    : pending.note;
+  const planLines = [
     "amount: $" + (pending.cents / 100).toFixed(2) + " USDT",
     "base units: " + pending.amount_base_units,
     "balance before: $" +
       (pending.balance_before_cents / 100).toFixed(2),
     "recipient: " + pending.recipient_id,
+    "payee authenticated: " + (pending.payee_authenticated ? "yes" : "no"),
     "fee: " + pending.fee_rate_sat_vb + " sat/vB",
     "invoice sha256: " + pending.invoice_sha256,
     "transport endpoints: []",
-  ].join("\n");
+  ];
+  if (pending.payee_note) planLines.push(pending.payee_note);
+  if (pending.display_denomination_cents != null) {
+    planLines.push(
+      "bill display (not authenticated): $" +
+        (pending.display_denomination_cents / 100).toFixed(2),
+    );
+  }
+  if (pending.guarantee) {
+    planLines.push("product: " + pending.guarantee.product);
+    planLines.push(pending.guarantee.cancel_cost);
+    planLines.push(pending.guarantee.what_is_enforced);
+  }
+  confirmPlan.textContent = planLines.join("\n");
   confirmationPhrase.value = "";
-  confirmationPhrase.placeholder = pending.confirmation_phrase;
+  confirmationPhrase.placeholder = pending.confirmation_phrase || "";
   dialog.showModal();
   confirmationPhrase.focus();
 }
@@ -266,7 +304,7 @@ form.addEventListener("submit", async (event) => {
   text.value = "";
   const res = await fetch("/api/chat", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: apiHeaders(),
     body: JSON.stringify({ text: value }),
   });
   const data = await res.json();
@@ -281,7 +319,7 @@ confirmForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const res = await fetch("/api/confirm", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: apiHeaders(),
       body: JSON.stringify({
         id: pendingId,
         phrase: confirmationPhrase.value,
@@ -313,7 +351,7 @@ dialog.addEventListener("close", async () => {
     if (cancelledId) {
       await fetch("/api/cancel", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders(),
         body: JSON.stringify({ id: cancelledId }),
       });
       line("bot", "Transfer plan cancelled. Nothing was broadcast.");

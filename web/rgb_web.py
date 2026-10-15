@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import os
+import secrets
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
 from dock.chunk_protocol import MAX_TRANSFER_BYTES
-from web.rgb.adapter import ConsignmentArtifact
+from web.rgb.adapter import ConfirmationRequired, ConsignmentArtifact
 from web.rgb.backend import ReceiveIntent
 from web.rgb.config import BillRole, RgbSettings, SettingsError
+from web.rgb.journal import ConsignmentJournal, JournalError, JournaledConsignment
 from web.rgb.runtime import open_adapter
+from web.rgb.settlement import classify_transfer_statuses
 from web.rgb.tap_flow import (
     BillChunkGateway,
     ChunkGateway,
@@ -34,11 +37,13 @@ class RgbWebError(RuntimeError):
         retryable: bool,
         broadcast: bool | None,
         recovery_path: Path | None = None,
+        clear_pending: bool = False,
     ) -> None:
         super().__init__(message)
         self.retryable = retryable
         self.broadcast = broadcast
         self.recovery_path = recovery_path
+        self.clear_pending = clear_pending
 
 
 @dataclass(frozen=True)
@@ -87,7 +92,10 @@ class RgbWebService:
         self._pending_invoice: tuple[int, ReceiveIntent, StoredArtifact] | None = None
         self._pending_consignment: tuple[int, ConsignmentArtifact] | None = None
         self._planned_cents: dict[str, int] = {}
+        self._confirmation_phrases: dict[str, str] = {}
         self._pending_import: ReceivedArtifact | None = None
+        self.journal_error: str | None = None
+        self._restore_journal()
 
     @classmethod
     def from_env(cls, *, gateway: ChunkGateway | None = None) -> RgbWebService:
@@ -219,8 +227,26 @@ class RgbWebService:
                 amount=amount,
                 expires_in_seconds=expires_in_seconds,
             )
+            phrase = "CONFIRM " + secrets.token_hex(4)
+            self._confirmation_phrases[prepared.plan.plan_id] = phrase
             self._planned_cents[prepared.plan.plan_id] = cents
-            return prepared
+            return InvoiceTransferPlan(
+                prepared.invoice,
+                prepared.artifact,
+                prepared.received_session_id,
+                prepared.plan,
+                phrase,
+            )
+
+    def cancel_plan(self, plan_id: str) -> bool:
+        """Drop an unbroadcast plan and its confirmation secret."""
+        with self._lock:
+            self._confirmation_phrases.pop(plan_id, None)
+            self._planned_cents.pop(plan_id, None)
+            discard = getattr(self.flow.adapter, "discard_plan", None)
+            if discard is None:
+                return True
+            return bool(discard(plan_id))
 
     def confirm_and_stage(self, plan_id: str, phrase: str) -> SendStageOutcome:
         if self.role is not BillRole.A:
@@ -229,17 +255,29 @@ class RgbWebService:
                 retryable=False,
                 broadcast=False,
             )
-        expected = f"CONFIRM {plan_id}"
-        if phrase != expected:
-            raise RgbWebError(
-                "confirmation phrase did not match; nothing was sent",
-                retryable=True,
-                broadcast=False,
-            )
         with self._lock:
+            expected = self._confirmation_phrases.get(plan_id)
+            if (
+                expected is None
+                or len(phrase) != len(expected)
+                or not secrets.compare_digest(phrase, expected)
+            ):
+                raise RgbWebError(
+                    "confirmation phrase did not match; nothing was sent",
+                    retryable=True,
+                    broadcast=False,
+                )
+            self._confirmation_phrases.pop(plan_id, None)
             try:
                 self.flow.adapter.confirm_transfer(plan_id)
                 consignment = self.flow.execute_confirmed_transfer(plan_id)
+            except ConfirmationRequired as exc:
+                raise RgbWebError(
+                    f"transfer was not broadcast: {exc}",
+                    retryable=True,
+                    broadcast=False,
+                    clear_pending=True,
+                ) from exc
             except Exception as exc:
                 raise RgbWebError(
                     "send failed or has an unknown broadcast outcome; "
@@ -253,6 +291,9 @@ class RgbWebService:
             # compatible with plans created before artifact metadata v1.
             cents = self._planned_cents.pop(plan_id, 500)
             self._pending_consignment = (cents, consignment)
+            journal_problem = self._persist_journal()
+            if journal_problem is not None:
+                return SendStageOutcome(consignment, None, journal_problem)
             return self._stage_pending_consignment()
 
     def retry_consignment_stage(self) -> SendStageOutcome:
@@ -289,7 +330,27 @@ class RgbWebService:
                 f"{type(exc).__name__}: {exc}",
             )
         self._pending_consignment = None
+        self._clear_journal()
         return SendStageOutcome(consignment, staged)
+
+    def pending_outbound(self) -> tuple[int, ConsignmentArtifact] | None:
+        with self._lock:
+            if self._pending_consignment is None:
+                return None
+            cents, artifact = self._pending_consignment
+            return cents, artifact
+
+    def startup_settlement(self) -> str:
+        """Re-derive settlement from the wallet's recorded transfer list.
+
+        Returns ``unknown`` when the wallet cannot be listed. That is not a
+        claim that the funds are unsettled or settled.
+        """
+        try:
+            statuses = self.flow.adapter.transfer_statuses(self.asset_id)
+        except Exception:
+            return "unknown"
+        return classify_transfer_statuses(statuses.values())
 
     def receive_and_import(self) -> ImportOutcome:
         if self.role is not BillRole.B:
@@ -321,3 +382,47 @@ class RgbWebService:
 
     def close(self) -> None:
         self.flow.adapter.close()
+
+    def _journal(self) -> ConsignmentJournal | None:
+        settings = getattr(self.flow.adapter, "settings", None)
+        inbox = getattr(settings, "inbox_dir", None)
+        if inbox is None:
+            return None
+        return ConsignmentJournal(Path(inbox) / "pending-consignment.json")
+
+    def _restore_journal(self) -> None:
+        journal = self._journal()
+        if journal is None:
+            return
+        try:
+            restored = journal.load()
+        except JournalError as exc:
+            self.journal_error = str(exc)
+            return
+        if restored is None:
+            return
+        self._pending_consignment = (restored.cents, restored.artifact)
+
+    def _persist_journal(self) -> str | None:
+        pending = self._pending_consignment
+        journal = self._journal()
+        if pending is None or journal is None:
+            return None
+        cents, artifact = pending
+        try:
+            journal.store(JournaledConsignment(cents, artifact))
+        except OSError as exc:
+            return (
+                "broadcast consignment could not be journaled; "
+                f"retry staging from {artifact.path}: {type(exc).__name__}: {exc}"
+            )
+        return None
+
+    def _clear_journal(self) -> None:
+        journal = self._journal()
+        if journal is None:
+            return
+        try:
+            journal.clear()
+        except OSError:
+            return
