@@ -104,6 +104,10 @@ def test_identity_reads_expected_characteristic(monkeypatch, capsys):
         async def __aexit__(self, exc_type, exc, traceback):
             return False
 
+        async def pair(self):
+            reads.append("pair")
+            return True
+
         async def read_gatt_char(self, uuid):
             reads.append(uuid)
             return bytearray(b"bill-unprovisioned")
@@ -112,7 +116,7 @@ def test_identity_reads_expected_characteristic(monkeypatch, capsys):
     monkeypatch.setattr(bill_dock, "BleakClient", FakeClient)
 
     assert asyncio.run(bill_dock.identity(0.1)) == 0
-    assert reads == [bill_dock.IDENTITY]
+    assert reads == ["pair", bill_dock.IDENTITY]
     assert "identity=bill-unprovisioned" in capsys.readouterr().out
 
 
@@ -140,6 +144,10 @@ def test_state_reads_frozen_core_characteristics(monkeypatch, capsys):
         async def __aexit__(self, exc_type, exc, traceback):
             return False
 
+        async def pair(self):
+            reads.append("pair")
+            return True
+
         async def read_gatt_char(self, uuid):
             reads.append(uuid)
             return bytearray(values[uuid])
@@ -148,7 +156,9 @@ def test_state_reads_frozen_core_characteristics(monkeypatch, capsys):
     monkeypatch.setattr(bill_dock, "BleakClient", FakeClient)
 
     assert asyncio.run(bill_dock.state(0.1)) == 0
+    assert reads[0] == "pair"
     assert reads == [
+        "pair",
         bill_dock.IDENTITY,
         bill_dock.STATUS,
         bill_dock.DENOMINATION,
@@ -237,6 +247,10 @@ def test_diagnostic_is_fixed_write_with_response(monkeypatch, capsys):
         async def __aexit__(self, exc_type, exc, traceback):
             return False
 
+        async def pair(self):
+            writes.append(("pair", b"", True))
+            return True
+
         async def write_gatt_char(self, uuid, payload, response):
             writes.append((uuid, bytes(payload), response))
             values[bill_dock.STATUS] = b"idle"
@@ -249,5 +263,37 @@ def test_diagnostic_is_fixed_write_with_response(monkeypatch, capsys):
     monkeypatch.setattr(bill_dock, "BleakClient", FakeClient)
 
     assert asyncio.run(bill_dock.diagnostic(0.1)) == 0
-    assert writes == [(bill_dock.CMD, bill_dock.DIAGNOSTIC_COMMAND, True)]
+    assert writes[0] == ("pair", b"", True)
+    assert (bill_dock.CMD, bill_dock.DIAGNOSTIC_COMMAND, True) in writes
     assert "diagnostic=ok" in capsys.readouterr().out
+
+
+def test_unpaired_client_is_not_allowed_to_read(monkeypatch):
+    device, _advertisement = _sighting()
+    reads = []
+
+    async def fake_find_target(_timeout, _address=None):
+        return device
+
+    class FakeClient:
+        def __init__(self, selected_device, timeout):
+            assert selected_device is device
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def pair(self):
+            raise RuntimeError("peer rejected pairing")
+
+        async def read_gatt_char(self, uuid):
+            reads.append(uuid)
+            return bytearray(b"should-not-read")
+
+    monkeypatch.setattr(bill_dock, "_find_target", fake_find_target)
+    monkeypatch.setattr(bill_dock, "BleakClient", FakeClient)
+
+    assert asyncio.run(bill_dock.identity(0.1)) == 1
+    assert reads == []

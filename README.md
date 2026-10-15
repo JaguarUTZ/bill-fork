@@ -4,6 +4,13 @@ Physical digital dollars. You tell the dock assistant “bill for $5”. The puc
 shows $5. You tap it to an empty puck. Value moves between hands. Bitcoin
 Mutinynet settles underneath. No QR. No pulling a phone app for the transfer.
 
+The original project is Edwin Kestler's
+[bill](https://github.com/EdwinKestler/bill). This fork keeps that credit.
+There is no license file upstream; see [NOTICE](NOTICE). The tap is not an
+offline check: [docs/CHECK-GUARANTEES.md](docs/CHECK-GUARANTEES.md) states
+what is enforced and what is not. Cancelling a broadcast is not guaranteed
+to cost more than creating it.
+
 This folder is a **git project** nested under the Agentic Dollars workspace
 (`rgbhackathon/ideas/bill`). Lookup uses that workspace’s Palimnex — **not** a
 second silo. See [docs/LOOKUP.md](docs/LOOKUP.md).

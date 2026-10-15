@@ -18,7 +18,12 @@ one-use confirmation and exact-artifact recovery boundaries intact.
   automatically.
 - Receive and send both pass `transport_endpoints=[]`.
 - The transfer is `donation=true`; rgb-lib broadcasts during the confirmed
-  send, so this path has no receiver ACK step.
+  send, so this path has no receiver ACK step. The web dock's confirmation
+  phrase is a random per-plan secret. Cancelling that broadcast is not
+  enforced to cost more than creating it; see
+  [docs/CHECK-GUARANTEES.md](../../docs/CHECK-GUARANTEES.md).
+- Bill B credits spendable units only from the wallet balance. An imported
+  transfer that is still waiting is accepted and unsettled.
 - The exact `consignment_path` returned by `list_transfers` is hashed and handed
   to the BLE chunk layer. Bill B persists the received bytes in its isolated
   inbox, then calls `provide_out_of_band_consignment` with no media paths.

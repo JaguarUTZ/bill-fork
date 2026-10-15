@@ -76,15 +76,24 @@ is still part of this prototype's trust boundary.
   `artifact=empty:empty`, then select the same dock action once. The live dock
   retains a failed invoice stage and does not create another invoice.
 - Confirmation mismatch: correct the phrase. Nothing was broadcast and the
-  displayed plan remains pending.
-- Send failure or unknown outcome: the plan is consumed and the UI says to
-  inspect the wallet. Never repeat that send.
+  displayed plan remains pending. The phrase is a per-plan secret, not
+  `CONFIRM <plan id>`, and `GET /api/bill` omits it unless the request sends
+  the dock session header.
+- Plan expiry or a changed balance before broadcast: nothing was sent. The
+  pending plan is cleared and a new plan can be created. This is not an
+  unknown broadcast.
+- Send failure or unknown outcome after the send call: the plan is consumed
+  and the UI says to inspect the wallet. Never repeat that send.
 - Broadcast succeeded but consignment staging failed: enter `retry stage` or
   call `POST /api/rgb/retry-stage`. This stages the retained consignment and
   cannot call send.
 - Import failed after receipt: select **Receive USDT** again. The service
   reuses the persisted artifact and does not require a second tap.
-- Cancel closes and invalidates the web-visible plan without broadcasting.
+- Cancel drops the unbroadcast plan in both the web UI and the adapter.
+  It does not unspend a broadcast.
+- Import does not add the expected amount to the spendable balance. Until
+  refresh reports the transfer settled, the dock shows it as accepted and
+  unsettled. `failed` and `expired` are separate states.
 
 ## JSON endpoints
 

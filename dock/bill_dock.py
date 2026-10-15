@@ -8,6 +8,7 @@ import hashlib
 import os
 import sys
 import struct
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -45,6 +46,56 @@ def _emit(message: str) -> None:
 
 class BillNotFoundError(RuntimeError):
     """Raised when the requested physical bill is not advertising."""
+
+
+class PairingRequired(RuntimeError):
+    """Encrypted GATT was required and Just Works pairing did not complete.
+
+    Pairing here is link encryption plus bonding. It does not authenticate
+    which physical bill completed the exchange.
+    """
+
+
+async def ensure_encrypted_link(client) -> None:
+    """Pair before any GATT read or write.
+
+    Firmware characteristics require encrypted permissions. ``pair`` is Just
+    Works when the bill advertises no keyboard or display: it stops unpaired
+    access and does not prove device identity.
+    """
+    pair = getattr(client, "pair", None)
+    if pair is None:
+        raise PairingRequired(
+            "BLE client cannot pair; encrypted GATT permissions require pairing"
+        )
+    already = getattr(client, "is_paired", False)
+    try:
+        if asyncio.iscoroutine(already):
+            already = await already
+        elif asyncio.iscoroutinefunction(already):
+            already = await already()
+        elif callable(already):
+            already = already()
+        if already is True:
+            return
+        await pair()
+    except PairingRequired:
+        raise
+    except Exception as exc:
+        message = str(exc).lower()
+        if "already paired" in message or "already exists" in message:
+            return
+        raise PairingRequired(
+            "BLE pairing failed; refusing unpaired GATT access: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+
+
+@asynccontextmanager
+async def _encrypted_client(target, timeout: float):
+    async with BleakClient(target, timeout=timeout) as client:
+        await ensure_encrypted_link(client)
+        yield client
 
 
 @dataclass(frozen=True)
@@ -232,7 +283,7 @@ async def read_bill_state(
     if target is None:
         qualifier = f" at {address}" if address else ""
         raise BillNotFoundError(f"no RgbBill advertisement{qualifier}")
-    async with BleakClient(target, timeout=timeout) as client:
+    async with _encrypted_client(target, timeout) as client:
         values = await _read_state(client, timeout)
     return _validated_state(target.address, *values)
 
@@ -245,7 +296,7 @@ async def run_display_diagnostic(
     if target is None:
         qualifier = f" at {address}" if address else ""
         raise BillNotFoundError(f"no RgbBill advertisement{qualifier}")
-    async with BleakClient(target, timeout=timeout) as client:
+    async with _encrypted_client(target, timeout) as client:
         await asyncio.wait_for(
             client.write_gatt_char(CMD, DIAGNOSTIC_COMMAND, response=True),
             timeout=timeout,
@@ -290,7 +341,7 @@ async def send_chunk_file(
     if target is None:
         raise BillNotFoundError(f"no RgbBill advertisement at {address}")
     payload = _read_transfer_file(path)
-    async with BleakClient(target, timeout=timeout) as client:
+    async with _encrypted_client(target, timeout) as client:
         transport = ChunkTransport(
             client, CHUNK_IN, CHUNK_OUT, timeout=timeout
         )
@@ -341,7 +392,7 @@ async def receive_chunk_file(
     target = await _find_target(timeout, address)
     if target is None:
         raise BillNotFoundError(f"no RgbBill advertisement at {address}")
-    async with BleakClient(target, timeout=timeout) as client:
+    async with _encrypted_client(target, timeout) as client:
         metadata = decode_artifact_metadata(
             bytes(
                 await asyncio.wait_for(
@@ -392,7 +443,7 @@ async def discard_staged_chunk(timeout: float, address: str) -> None:
     target = await _find_target(timeout, address)
     if target is None:
         raise BillNotFoundError(f"no RgbBill advertisement at {address}")
-    async with BleakClient(target, timeout=timeout) as client:
+    async with _encrypted_client(target, timeout) as client:
         await asyncio.wait_for(
             client.write_gatt_char(CMD, CHUNK_DISCARD_COMMAND, response=True),
             timeout=timeout,
@@ -424,8 +475,12 @@ async def identity(timeout: float, address: str | None = None) -> int:
         _emit(f"no RgbBill advertisement{qualifier}")
         return 1
 
-    async with BleakClient(target, timeout=timeout) as client:
-        identity_value = await _read_text(client, IDENTITY, timeout)
+    try:
+        async with _encrypted_client(target, timeout) as client:
+            identity_value = await _read_text(client, IDENTITY, timeout)
+    except PairingRequired as exc:
+        _emit(str(exc))
+        return 1
     _emit(f"{target.address}  identity={identity_value}")
     return 0
 
@@ -434,7 +489,7 @@ async def state(timeout: float, address: str | None = None) -> int:
     """Read the frozen dock core state without subscribing or writing."""
     try:
         bill_state = await read_bill_state(timeout, address)
-    except (BillNotFoundError, ValueError) as exc:
+    except (BillNotFoundError, PairingRequired, ValueError) as exc:
         _emit(str(exc))
         return 1
     _emit(
@@ -454,7 +509,7 @@ async def diagnostic(timeout: float, address: str | None = None) -> int:
     """Run the no-wallet display diagnostic with no numeric amount."""
     try:
         bill_state = await run_display_diagnostic(timeout, address)
-    except (BillNotFoundError, ValueError) as exc:
+    except (BillNotFoundError, PairingRequired, ValueError) as exc:
         _emit(str(exc))
         return 1
     _emit(
@@ -484,7 +539,13 @@ async def chunk_send(
             echo=echo,
             denomination_cents=denomination_cents,
         )
-    except (BillNotFoundError, ChunkProtocolError, OSError, asyncio.TimeoutError) as exc:
+    except (
+        BillNotFoundError,
+        PairingRequired,
+        ChunkProtocolError,
+        OSError,
+        asyncio.TimeoutError,
+    ) as exc:
         _emit(f"chunk transfer failed: {exc}")
         return 1
     payload = path.read_bytes()
@@ -512,7 +573,13 @@ async def chunk_receive(
             expected_kind=kind,
             expected_session_id=session_id,
         )
-    except (BillNotFoundError, ChunkProtocolError, OSError, asyncio.TimeoutError) as exc:
+    except (
+        BillNotFoundError,
+        PairingRequired,
+        ChunkProtocolError,
+        OSError,
+        asyncio.TimeoutError,
+    ) as exc:
         _emit(f"chunk receive failed: {exc}")
         return 1
     digest = hashlib.sha256(output.read_bytes()).hexdigest()
@@ -527,7 +594,7 @@ async def chunk_receive(
 async def chunk_discard(timeout: float, address: str) -> int:
     try:
         await discard_staged_chunk(timeout, address)
-    except (BillNotFoundError, OSError, asyncio.TimeoutError) as exc:
+    except (BillNotFoundError, PairingRequired, OSError, asyncio.TimeoutError) as exc:
         _emit(f"chunk discard failed: {exc}")
         return 1
     _emit(f"{address}  staged chunk discarded")

@@ -1,7 +1,9 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from web.rgb.native import RgbLibBackend
+import pytest
+
+from web.rgb.native import RgbLibBackend, RgbLibUnavailable, statuses_from_transfers
 
 
 class FakeLock:
@@ -155,3 +157,22 @@ def test_native_receiver_import_uses_no_media_or_proxy(tmp_path):
 
     assert wallet.import_args == ("online", str(path), [])
     assert result == {4: "waitingconfirmations"}
+
+
+def test_statuses_from_transfers_keeps_failed_distinct():
+    statuses = statuses_from_transfers(
+        [
+            SimpleNamespace(
+                batch_transfer_idx=4,
+                status=SimpleNamespace(name="FAILED"),
+            ),
+            SimpleNamespace(
+                batch_transfer_idx=5,
+                status=SimpleNamespace(name="WAITING_CONFIRMATIONS"),
+            ),
+        ]
+    )
+
+    assert statuses == {4: "failed", 5: "waiting_confirmations"}
+    with pytest.raises(RgbLibUnavailable, match="status"):
+        statuses_from_transfers([SimpleNamespace(batch_transfer_idx=1)])

@@ -243,6 +243,22 @@ def test_failed_send_is_not_implicitly_retryable(tmp_path):
         adapter.execute_confirmed_transfer(plan.plan_id)
 
 
+def test_discard_plan_drops_an_unbroadcast_plan(tmp_path):
+    backend = FakeBackend(tmp_path, balance=500)
+    adapter = RgbBillAdapter(settings(tmp_path, BillRole.A), backend, clock=lambda: 1000)
+    plan = adapter.plan_transfer(
+        asset_id="rgb:usdt",
+        recipient_id="recipient",
+        amount=200,
+    )
+
+    assert adapter.discard_plan(plan.plan_id) is True
+    assert backend.send_calls == []
+    with pytest.raises(ConfirmationRequired, match="unknown or already-consumed"):
+        adapter.confirm_transfer(plan.plan_id)
+    assert adapter.discard_plan(plan.plan_id) is False
+
+
 def test_changed_balance_consumes_confirmation_and_requires_new_plan(tmp_path):
     backend = FakeBackend(tmp_path, balance=500)
     adapter = RgbBillAdapter(settings(tmp_path, BillRole.A), backend, clock=lambda: 1000)

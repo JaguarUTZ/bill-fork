@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import sys
 import threading
 from collections.abc import Callable
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any, ParamSpec, TypeVar
 from urllib.parse import urlparse
 
+from web.rgb.check_guarantee import describe_guarantee
 from web.rgb.config import BillRole
 from dock.chunk_protocol import FrameKind
 from web.device_registry import (
@@ -21,6 +23,7 @@ from web.device_registry import (
     DeviceRegistryError,
     RegisteredBillGateway,
 )
+from web.rgb.settlement import classify_transfer_statuses, receive_settlement
 from web.rgb_web import RgbWebError, RgbWebService
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -28,6 +31,9 @@ HOST = os.environ.get("DOCK_HTTP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("DOCK_HTTP_PORT", "8788"))
 ROLE = os.environ.get("BILL_ROLE", "A").upper()
 MODE = "live-rgb-tap"
+MAX_HTTP_BODY_BYTES = 65_536
+_SESSION_HEADER = "X-Dock-Session"
+_session_token = secrets.token_urlsafe(32)
 
 _state_lock = threading.RLock()
 _confirm_lock = threading.Lock()
@@ -51,6 +57,7 @@ _state: dict[str, Any] = {
     "asset_id": os.environ.get("RGB_ASSET_ID") or None,
     "asset_precision": os.environ.get("RGB_ASSET_PRECISION") or None,
     "expected_receive_cents": None,
+    "unsettled_cents": None,
 }
 
 
@@ -82,6 +89,7 @@ def _bill() -> dict[str, Any]:
             "settlement": _state["settlement"],
             "asset_id": _state["asset_id"],
             "asset_precision": _state["asset_precision"],
+            "unsettled_cents": _state["unsettled_cents"],
             "device": device,
         }
 
@@ -199,6 +207,10 @@ def handle_device_register(
     }
 
 
+def _contains_word(text: str, *words: str) -> bool:
+    return any(re.search(rf"\b{re.escape(word)}\b", text) for word in words)
+
+
 def _requested_cents(text: str) -> int:
     match = re.search(r"\$?\s*(\d+(?:\.\d{1,2})?)", text)
     return 500 if match is None else int(round(float(match.group(1)) * 100))
@@ -274,18 +286,21 @@ def handle_send_usdt(
                 retryable=True,
                 broadcast=False,
             )
-        if artifact["denomination_cents"] != cents:
-            raise RgbWebError(
-                "the invoice amount on Bill A does not match $5.00",
-                retryable=False,
-                broadcast=False,
-            )
+        display_cents = artifact.get("denomination_cents")
     except Exception as exc:
         result = _error(exc)
         result["reply"] = result["error"]
         result["pending"] = None
         return result
-    return handle_plan(cents, selected)
+    # denomination_cents is an unauthenticated display field. It never selects
+    # the amount that will be broadcast.
+    if not isinstance(display_cents, int):
+        display_cents = None
+    return handle_plan(
+        cents,
+        selected,
+        display_denomination_cents=display_cents,
+    )
 
 
 @_serialized_workflow
@@ -429,7 +444,12 @@ def handle_stage_invoice(
 
 
 @_serialized_workflow
-def handle_plan(cents: int, service: RgbWebService | None = None) -> dict[str, Any]:
+def handle_plan(
+    cents: int,
+    service: RgbWebService | None = None,
+    *,
+    display_denomination_cents: int | None = None,
+) -> dict[str, Any]:
     rejected = _require_five(cents)
     if rejected is not None:
         return rejected
@@ -446,6 +466,32 @@ def handle_plan(cents: int, service: RgbWebService | None = None) -> dict[str, A
         return result
 
     plan = prepared.plan
+    phrase = prepared.confirmation_phrase
+    if not phrase:
+        result = _error(
+            RgbWebError(
+                "transfer plan is missing a confirmation secret; nothing was sent",
+                retryable=True,
+                broadcast=False,
+            )
+        )
+        result["reply"] = result["error"]
+        result["pending"] = None
+        return result
+    guarantee = describe_guarantee(
+        witness_amount_sat=plan.witness_amount_sat,
+        fee_rate_sat_vb=plan.fee_rate,
+        min_confirmations=plan.min_confirmations,
+    )
+    display_note = ""
+    if (
+        display_denomination_cents is not None
+        and display_denomination_cents != cents
+    ):
+        display_note = (
+            f" The bill display says ${display_denomination_cents / 100:.2f}, "
+            "which is not authenticated and is not the amount that will be sent."
+        )
     pending = {
         "id": plan.plan_id,
         "action": "rgb-send",
@@ -453,6 +499,12 @@ def handle_plan(cents: int, service: RgbWebService | None = None) -> dict[str, A
         "ticker": "USDT",
         "asset_id": plan.asset_id,
         "recipient_id": plan.recipient_id,
+        "payee_authenticated": False,
+        "payee_note": (
+            "Invoice beneficiary "
+            f"{plan.recipient_id}. BLE did not authenticate the bill that "
+            "delivered this invoice."
+        ),
         "amount_base_units": plan.amount,
         "balance_before_base_units": plan.balance_before,
         "balance_before_cents": balance_cents,
@@ -467,12 +519,19 @@ def handle_plan(cents: int, service: RgbWebService | None = None) -> dict[str, A
             if prepared.received_session_id is not None
             else None
         ),
-        "confirmation_phrase": f"CONFIRM {plan.plan_id}",
+        "confirmation_phrase": phrase,
+        "display_denomination_cents": display_denomination_cents,
+        "display_denomination_authenticated": False,
+        "guarantee": guarantee.as_dict(),
         "donation": True,
         "transport_endpoints": [],
         "note": (
             f"Send ${cents / 100:.2f} USDT on Mutinynet to the tapped invoice. "
-            "Review the immutable plan and type its exact confirmation phrase."
+            "This broadcasts immediately. Spendable credit on the receiver waits "
+            "until that wallet reports settlement. Cancelling the broadcast is not "
+            "enforced to cost more than sending it. "
+            "Review the plan and type its confirmation phrase."
+            + display_note
         ),
     }
     with _state_lock:
@@ -519,6 +578,15 @@ def handle_confirm(
             outcome = selected.confirm_and_stage(confirm_id, phrase)
         except Exception as exc:
             result = _error(exc)
+            if isinstance(exc, RgbWebError) and exc.clear_pending:
+                with _state_lock:
+                    current = _state["pending"]
+                    if current is not None and current.get("id") == confirm_id:
+                        _state["pending"] = None
+                        _state["status"] = "idle"
+                        _state["settlement"] = "not-broadcast"
+                        _state["recovery"] = None
+                return result
             if not result["retryable"]:
                 receipt = {
                     "id": confirm_id,
@@ -712,25 +780,32 @@ def handle_import(service: RgbWebService | None = None) -> dict[str, Any]:
         }
 
     updated = {str(key): value for key, value in outcome.updated_transfers.items()}
-    statuses = set(updated.values())
-    settlement = (
-        "settled"
-        if statuses and statuses <= {"settled"}
-        else "waiting-confirmations"
-    )
+    kind = classify_transfer_statuses(updated.values())
+    settlement = receive_settlement(kind)
+    try:
+        spendable = selected.spendable_cents()
+    except Exception as exc:
+        return _error(exc)
     receipt.update(
         {
-            "status": "consignment-imported",
+            "status": (
+                "consignment-imported"
+                if settlement == "settled"
+                else settlement
+            ),
             "settlement": settlement,
             "updated_transfers": updated,
+            "spendable_cents": spendable,
         }
     )
     with _state_lock:
         expected = _state["expected_receive_cents"]
-        if expected is not None:
-            _state["cents"] += expected
+        _state["cents"] = spendable
         _state["expected_receive_cents"] = None
-        _state["status"] = "consignment-imported"
+        _state["unsettled_cents"] = (
+            expected if settlement == "accepted-unsettled" else None
+        )
+        _state["status"] = receipt["status"]
         _state["settlement"] = settlement
         _state["recovery"] = None
         _state["receipts"].insert(0, receipt)
@@ -748,13 +823,22 @@ def handle_refresh(service: RgbWebService | None = None) -> dict[str, Any]:
     except Exception as exc:
         return _error(exc)
     updated = {str(key): value for key, value in updated_transfers.items()}
-    statuses = set(updated.values())
+    kind = classify_transfer_statuses(updated.values()) if updated else None
     with _state_lock:
         _state["cents"] = cents
-        if any(status == "settled" for status in statuses):
+        if kind == "transfer-failed":
+            _state["status"] = "transfer-failed"
+            _state["settlement"] = "transfer-failed"
+            _state["unsettled_cents"] = None
+        elif kind == "transfer-expired":
+            _state["status"] = "transfer-expired"
+            _state["settlement"] = "transfer-expired"
+            _state["unsettled_cents"] = None
+        elif kind == "settled":
             _state["status"] = "settled"
             _state["settlement"] = "settled"
-        elif statuses:
+            _state["unsettled_cents"] = None
+        elif kind == "waiting-confirmations":
             _state["status"] = "waiting-confirmations"
             _state["settlement"] = "waiting-confirmations"
         _state["receipts"].insert(
@@ -786,21 +870,32 @@ def handle_chat(
         result = _error(exc)
         return {"reply": result["error"], "pending": None, **result}
 
-    if selected.role is BillRole.B and any(
-        word in lowered for word in ("import", "consignment", "settle")
+    if selected.role is BillRole.B and _contains_word(
+        lowered, "import", "consignment", "settle"
     ):
         result = handle_import(selected)
-        result.setdefault(
-            "reply",
-            (
-                "Consignment imported; waiting for Mutinynet confirmation."
-                if result["ok"]
-                else result.get("error", "Consignment import needs recovery.")
-            ),
-        )
+        settlement = (result.get("bill") or {}).get("settlement")
+        if result["ok"] and settlement == "accepted-unsettled":
+            reply = (
+                "Consignment imported. It is accepted and unsettled: "
+                "the spendable balance did not change."
+            )
+        elif result["ok"] and settlement == "settled":
+            reply = "Consignment imported and the wallet reports it settled."
+        elif result["ok"] and settlement in {"transfer-failed", "transfer-expired"}:
+            reply = f"Consignment imported and the wallet reports {settlement}."
+        elif result["ok"]:
+            reply = "Consignment imported."
+        else:
+            reply = result.get("error", "Consignment import needs recovery.")
+        result.setdefault("reply", reply)
         result.setdefault("pending", None)
         return result
-    if selected.role is BillRole.A and "retry" in lowered and "stage" in lowered:
+    if (
+        selected.role is BillRole.A
+        and _contains_word(lowered, "retry")
+        and _contains_word(lowered, "stage")
+    ):
         result = handle_retry_stage(selected)
         result.setdefault(
             "reply",
@@ -812,12 +907,12 @@ def handle_chat(
         )
         result.setdefault("pending", None)
         return result
-    if any(word in lowered for word in ("bill", "print", "dollar", "receive")):
+    if _contains_word(lowered, "bill", "print", "dollar", "receive"):
         cents = _requested_cents(lowered)
         if selected.role is BillRole.B:
             return handle_stage_invoice(cents, selected)
         return handle_plan(cents, selected)
-    if any(word in lowered for word in ("status", "worth", "balance")):
+    if _contains_word(lowered, "status", "worth", "balance"):
         refreshed = handle_refresh(selected)
         if not refreshed["ok"]:
             refreshed.setdefault("reply", refreshed["error"])
@@ -841,20 +936,140 @@ def handle_chat(
 
 
 @_serialized_workflow
-def handle_cancel(confirm_id: str) -> dict[str, Any]:
-    with _state_lock:
-        pending = _state["pending"]
-        if pending is None or pending.get("id") != confirm_id:
+def handle_cancel(
+    confirm_id: str, service: RgbWebService | None = None
+) -> dict[str, Any]:
+    with _confirm_lock:
+        selected = service if service is not None else _rgb_service
+        with _state_lock:
+            pending = _state["pending"]
+            if pending is None or pending.get("id") != confirm_id:
+                return {
+                    "ok": False,
+                    "error": "no matching pending RGB transfer plan",
+                    "broadcast": False,
+                    "retryable": False,
+                }
+        if selected is not None and hasattr(selected, "cancel_plan"):
+            try:
+                dropped = selected.cancel_plan(confirm_id)
+            except Exception as exc:
+                return _error(exc)
+            if dropped is False:
+                return {
+                    "ok": False,
+                    "error": (
+                        "plan was already consumed; inspect the wallet before "
+                        "creating another send"
+                    ),
+                    "broadcast": False,
+                    "retryable": False,
+                }
+        with _state_lock:
+            _state["pending"] = None
+            _state["status"] = "idle"
+            _state["settlement"] = "not-broadcast"
+        return {"ok": True, "broadcast": False, "bill": _bill()}
+
+
+def _loopback_names() -> set[str]:
+    names = {"localhost", "127.0.0.1", "::1"}
+    if HOST not in {"0.0.0.0", "::", ""}:
+        names.add(HOST.strip().lower())
+    return names
+
+
+def _split_host(value: str) -> tuple[str, int | None] | None:
+    text = value.strip().lower()
+    if not text:
+        return None
+    if text.startswith("["):
+        end = text.find("]")
+        if end <= 1:
+            return None
+        host = text[1:end]
+        rest = text[end + 1 :]
+        if rest == "":
+            return host, None
+        if not rest.startswith(":") or not rest[1:].isdigit():
+            return None
+        return host, int(rest[1:])
+    if text.count(":") > 1:
+        return None
+    if ":" in text:
+        host, _, port = text.partition(":")
+        if not host or not port.isdigit():
+            return None
+        return host, int(port)
+    return text, None
+
+
+def host_allowed(host_header: str | None) -> bool:
+    """Allow only the bind host, or loopback when the bind is all interfaces.
+
+    Binding ``0.0.0.0`` accepts connections on every interface, but a Host
+    header of an arbitrary name is still rejected. Set ``DOCK_HTTP_HOST`` to
+    the specific name that browsers will send.
+    """
+    if host_header is None:
+        return False
+    parsed = _split_host(host_header)
+    if parsed is None:
+        return False
+    host, port = parsed
+    if port not in {None, PORT}:
+        return False
+    return host in _loopback_names()
+
+
+def origin_allowed(origin: str | None) -> bool:
+    """Missing Origin is allowed for non-browser clients.
+
+    A present Origin must be http on an allowed host and this dock's port.
+    ``Origin: null`` is rejected.
+    """
+    if origin is None or origin == "":
+        return True
+    parsed = urlparse(origin)
+    if parsed.scheme != "http" or parsed.hostname is None:
+        return False
+    if parsed.port not in {None, PORT}:
+        return False
+    return parsed.hostname.lower() in _loopback_names()
+
+
+def json_content_type(value: str | None) -> bool:
+    if not value:
+        return False
+    return value.split(";", 1)[0].strip().lower() == "application/json"
+
+
+def session_matches(header_value: str | None) -> bool:
+    if header_value is None:
+        return False
+    provided = header_value.strip()
+    if len(provided) != len(_session_token):
+        return False
+    return secrets.compare_digest(provided, _session_token)
+
+
+def redact_secrets(payload: Any, *, reveal: bool) -> Any:
+    """Drop confirmation phrases unless this request holds the dock session."""
+    if reveal:
+        return payload
+
+    def walk(value: Any) -> Any:
+        if isinstance(value, dict):
             return {
-                "ok": False,
-                "error": "no matching pending RGB transfer plan",
-                "broadcast": False,
-                "retryable": False,
+                key: walk(item)
+                for key, item in value.items()
+                if key != "confirmation_phrase"
             }
-        _state["pending"] = None
-        _state["status"] = "idle"
-        _state["settlement"] = "not-broadcast"
-    return {"ok": True, "broadcast": False, "bill": _bill()}
+        if isinstance(value, list):
+            return [walk(item) for item in value]
+        return value
+
+    return walk(payload)
 
 
 def _status_code(result: dict[str, Any]) -> int:
@@ -894,14 +1109,59 @@ class DockHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def _reject(self, code: int, error: str) -> None:
+        self._json(code, {"ok": False, "error": error, "broadcast": False})
+
+    def _authorized(self, *, mutating: bool) -> bool:
+        if not host_allowed(self.headers.get("Host")):
+            self._reject(403, "host is not in the dock bind allow-list")
+            return False
+        if not origin_allowed(self.headers.get("Origin")):
+            self._reject(403, "origin is not in the dock bind allow-list")
+            return False
+        if mutating and not session_matches(self.headers.get(_SESSION_HEADER)):
+            self._reject(401, "dock session header is missing or wrong")
+            return False
+        return True
+
     def _read_json(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length", "0"))
-        if length <= 0:
+        if not json_content_type(self.headers.get("Content-Type")):
+            raise ValueError("content type must be application/json")
+        raw_length = self.headers.get("Content-Length", "0")
+        length = int(raw_length)
+        if length < 0:
+            raise ValueError("invalid content length")
+        if length > MAX_HTTP_BODY_BYTES:
+            raise ValueError("request body exceeds 65536 bytes")
+        if length == 0:
             return {}
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
+    def _serve_index(self) -> None:
+        page = (STATIC / "index.html").read_text(encoding="utf-8")
+        page = page.replace(
+            '<meta name="dock-session" content="" />',
+            f'<meta name="dock-session" content="{_session_token}" />',
+            1,
+        )
+        raw = page.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(raw)
+
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if path in {"/", "/index.html"}:
+            if not self._authorized(mutating=False):
+                return
+            self._serve_index()
+            return
+        if path.startswith("/api/") and not self._authorized(mutating=False):
+            return
+        reveal = session_matches(self.headers.get(_SESSION_HEADER))
         if path == "/api/health":
             self._json(
                 200,
@@ -927,22 +1187,29 @@ class DockHandler(SimpleHTTPRequestHandler):
                 self._json(_status_code(result), result)
             return
         if path == "/api/bill":
-            self._json(200, _bill())
+            self._json(200, redact_secrets(_bill(), reveal=reveal))
             return
-        if path == "/":
-            self.path = "/index.html"
         super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if not self._authorized(mutating=True):
+            return
         try:
             body = self._read_json()
-        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
-            self._json(400, {"ok": False, "error": "invalid json"})
+        except ValueError as exc:
+            message = str(exc)
+            code = 413 if "65536" in message else 400
+            if "content type" in message:
+                code = 415
+            self._json(code, {"ok": False, "error": message, "broadcast": False})
+            return
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json(400, {"ok": False, "error": "invalid json", "broadcast": False})
             return
         if path == "/api/chat":
             result = handle_chat(str(body.get("text") or ""))
-            self._json(_status_code(result), result)
+            self._json(_status_code(result), redact_secrets(result, reveal=True))
             return
         if path == "/api/workflow/send":
             try:
@@ -951,7 +1218,7 @@ class DockHandler(SimpleHTTPRequestHandler):
                 self._json(400, {"ok": False, "error": "cents must be an integer"})
                 return
             result = handle_send_usdt(cents)
-            self._json(_status_code(result), result)
+            self._json(_status_code(result), redact_secrets(result, reveal=True))
             return
         if path == "/api/workflow/receive":
             try:
@@ -988,7 +1255,10 @@ class DockHandler(SimpleHTTPRequestHandler):
             return
         if path == "/api/cancel":
             result = handle_cancel(str(body.get("id") or ""))
-            self._json(_status_code(result), result)
+            self._json(
+                _status_code(result),
+                redact_secrets(result, reveal=True),
+            )
             return
         if path == "/api/rgb/invoice":
             try:
@@ -1006,7 +1276,7 @@ class DockHandler(SimpleHTTPRequestHandler):
                 self._json(400, {"ok": False, "error": "cents must be an integer"})
                 return
             result = handle_plan(cents)
-            self._json(_status_code(result), result)
+            self._json(_status_code(result), redact_secrets(result, reveal=True))
             return
         if path == "/api/rgb/import":
             result = handle_import()
@@ -1049,14 +1319,69 @@ def main() -> None:
     _device_registry = registry
     _rgb_service = service
     registered_device = registry.snapshot()["device"]
+    status = "idle"
+    settlement = "unknown"
+    recovery = None
+    try:
+        reporter = getattr(service, "startup_settlement", None)
+        if reporter is not None:
+            settlement = str(reporter())
+        if settlement not in {
+            "settled",
+            "waiting-confirmations",
+            "transfer-failed",
+            "transfer-expired",
+            "not-broadcast",
+            "unknown",
+        }:
+            settlement = "unknown"
+    except Exception:
+        settlement = "unknown"
+    journal_error = getattr(service, "journal_error", None)
+    pending_outbound = None
+    outbound = getattr(service, "pending_outbound", None)
+    if outbound is not None:
+        try:
+            pending_outbound = outbound()
+        except Exception:
+            journal_error = journal_error or "in-flight consignment journal could not be read"
+    if journal_error:
+        status = "send-outcome-unknown"
+        settlement = "unknown"
+        recovery = {
+            "action": "inspect-wallet-before-any-new-plan",
+            "retry_send": False,
+            "error": journal_error,
+        }
+    elif pending_outbound is not None:
+        _cents, artifact = pending_outbound
+        status = "consignment-stage-recovery-required"
+        settlement = "broadcast"
+        recovery = {
+            "action": "retry-consignment-stage",
+            "endpoint": "/api/rgb/retry-stage",
+            "txid": artifact.txid,
+            "artifact_path": str(artifact.path),
+            "artifact_sha256": artifact.sha256,
+            "retry_send": False,
+        }
+    elif settlement == "waiting-confirmations":
+        status = "waiting-confirmations"
+    elif settlement == "transfer-failed":
+        status = "transfer-failed"
+    elif settlement == "transfer-expired":
+        status = "transfer-expired"
+    elif settlement == "settled":
+        status = "idle"
     with _state_lock:
         _state.update(
             {
                 "role": service.role.value,
-                "status": "idle",
+                "status": status,
                 "cents": balance_cents,
                 "mode": MODE,
-                "settlement": "settled",
+                "settlement": settlement,
+                "recovery": recovery,
                 "asset_id": service.asset_id,
                 "asset_precision": service.asset_precision,
                 "identity": (

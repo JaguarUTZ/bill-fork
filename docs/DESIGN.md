@@ -41,6 +41,12 @@ device selection, not cryptographic device ownership authentication.
 5. The board display shows an amount only while a complete invoice or
    consignment is physically stored. Empty inventory displays no amount.
 
+The product is a tap that delivers an already-broadcast transfer. The
+receiver's spendable balance changes when that wallet reports the transfer
+settled. It is not an offline check, and this repository cannot make
+cancelling the broadcast cost more than creating it. The exact limits are
+in [CHECK-GUARANTEES.md](CHECK-GUARANTEES.md).
+
 The dock adapter enforces this as two isolated processes, not one process with
 two wallet objects. Bill B creates the witness invoice. Bill A reads its full
 spendable asset balance, presents an immutable plan, consumes a one-use human

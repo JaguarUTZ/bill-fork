@@ -23,6 +23,7 @@ from web.server import (
     handle_device_register,
     handle_device_scan,
     handle_import,
+    handle_refresh,
     handle_retry_stage,
     handle_send_usdt,
     handle_receive_usdt,
@@ -141,7 +142,10 @@ class FakeWebService:
             invoice_artifact,
             0x11111111,
             plan,
+            "CONFIRM plan-123",
         )
+        self.cancelled = None
+        self.import_statuses = {4: "waiting_confirmations"}
         consignment_path = tmp_path / "consignment.rgbc"
         consignment_path.write_bytes(b"real-consignment")
         self.consignment = ConsignmentArtifact(
@@ -204,10 +208,14 @@ class FakeWebService:
 
     def receive_and_import(self):
         assert self.role is BillRole.B
-        return ImportOutcome(
-            self.received,
-            {4: "waiting_confirmations"},
-        )
+        return ImportOutcome(self.received, dict(self.import_statuses))
+
+    def spendable_cents(self):
+        return 6000 if self.role is BillRole.A else 4000
+
+    def cancel_plan(self, plan_id):
+        self.cancelled = plan_id
+        return True
 
     def refresh_settlement(self):
         return 6000 if self.role is BillRole.A else 4000, {7: "settled"}
@@ -228,6 +236,7 @@ def reset_state(*, role: str, cents: int) -> None:
             "asset_id": "rgb:usdt",
             "asset_precision": 6,
             "expected_receive_cents": None,
+            "unsettled_cents": None,
         }
     )
 
@@ -303,8 +312,10 @@ def test_bill_b_stages_invoice_and_imports_received_consignment(tmp_path):
     assert imported["receipt"]["updated_transfers"] == {
         "4": "waiting_confirmations"
     }
-    assert imported["bill"]["cents"] == 4500
-    assert imported["bill"]["settlement"] == "waiting-confirmations"
+    assert imported["bill"]["cents"] == 4000
+    assert imported["bill"]["settlement"] == "accepted-unsettled"
+    assert imported["bill"]["unsettled_cents"] == 500
+    assert imported["receipt"]["spendable_cents"] == 4000
 
 
 def test_non_five_dollar_amount_is_not_confirmable(tmp_path):
@@ -324,12 +335,13 @@ def test_cancel_discards_web_plan_without_confirmation_or_broadcast(tmp_path):
     service = FakeWebService(tmp_path, role=BillRole.A)
     pending = handle_chat("bill for $5", service)["pending"]
 
-    result = handle_cancel(pending["id"])
+    result = handle_cancel(pending["id"], service)
 
     assert result["ok"] is True
     assert result["broadcast"] is False
     assert result["bill"]["pending"] is None
     assert service.confirm_calls == 0
+    assert service.cancelled == pending["id"]
 
 
 def test_status_refreshes_through_same_live_wallet_service(tmp_path):
@@ -528,6 +540,7 @@ def test_main_loads_registration_without_startup_ble_connect(monkeypatch):
     web_server.main()
 
     assert _state["identity"] == "bill-saved"
+    assert _state["settlement"] == "unknown"
     assert service.closed is True
     assert fake_server.closed is True
 
@@ -539,3 +552,224 @@ def test_startup_429_message_does_not_echo_remote_html():
 
     assert "HTTP 429" in message
     assert "<html>" not in message
+
+
+def test_failed_import_does_not_credit_spendable_balance(tmp_path):
+    reset_state(role="B", cents=4000)
+    _state["expected_receive_cents"] = 500
+    service = FakeWebService(tmp_path, role=BillRole.B)
+    service.import_statuses = {4: "failed"}
+
+    imported = handle_import(service)
+
+    assert imported["ok"] is True
+    assert imported["bill"]["cents"] == 4000
+    assert imported["bill"]["settlement"] == "transfer-failed"
+    assert imported["bill"]["unsettled_cents"] is None
+
+
+def test_refresh_maps_failed_and_expired_without_calling_them_waiting(tmp_path):
+    reset_state(role="B", cents=4000)
+    service = FakeWebService(tmp_path, role=BillRole.B)
+    service.refresh_settlement = lambda: (4000, {4: "failed", 5: "waiting_confirmations"})
+
+    failed = handle_refresh(service)
+
+    assert failed["bill"]["settlement"] == "transfer-failed"
+    assert failed["bill"]["cents"] == 4000
+
+    service.refresh_settlement = lambda: (4000, {5: "expired"})
+    expired = handle_refresh(service)
+
+    assert expired["bill"]["settlement"] == "transfer-expired"
+    assert expired["bill"]["status"] == "transfer-expired"
+
+
+def test_display_denomination_is_not_the_send_amount(tmp_path):
+    reset_state(role="A", cents=6000)
+    service = FakeWebService(tmp_path, role=BillRole.A)
+    invoice = InventoryRegistry(
+        {
+            "direction": "to-dock",
+            "kind": int(FrameKind.INVOICE),
+            "denomination_cents": 100,
+        }
+    )
+
+    result = handle_send_usdt(500, service, invoice)
+
+    assert result["ok"] is True
+    assert result["pending"]["cents"] == 500
+    assert result["pending"]["display_denomination_cents"] == 100
+    assert result["pending"]["display_denomination_authenticated"] is False
+    assert result["pending"]["payee_authenticated"] is False
+    assert result["pending"]["guarantee"]["cancel_costs_more_than_create"] is False
+    assert result["pending"]["guarantee"]["offline_validation"] is False
+    assert "not authenticated" in result["pending"]["note"]
+
+
+def test_substring_settlement_does_not_import(tmp_path):
+    reset_state(role="B", cents=4000)
+    service = FakeWebService(tmp_path, role=BillRole.B)
+
+    def unexpected_import():
+        raise AssertionError("settlement must not import")
+
+    service.receive_and_import = unexpected_import
+    result = handle_chat("what is the settlement status?", service)
+
+    assert result["ok"] is True
+    assert "$40.00" in result["reply"]
+
+
+def test_prebroadcast_confirmation_error_clears_plan_without_recovery_wedge(tmp_path):
+    reset_state(role="A", cents=6000)
+    service = FakeWebService(tmp_path, role=BillRole.A)
+    pending = handle_chat("bill for $5", service)["pending"]
+
+    def expired(_plan_id, _phrase):
+        raise RgbWebError(
+            "transfer was not broadcast: transfer plan expired before confirmation",
+            retryable=True,
+            broadcast=False,
+            clear_pending=True,
+        )
+
+    service.confirm_and_stage = expired
+    result = handle_confirm(pending["id"], pending["confirmation_phrase"], service)
+
+    assert result["ok"] is False
+    assert result["retryable"] is True
+    assert result["broadcast"] is False
+    assert _state["pending"] is None
+    assert _state["status"] == "idle"
+    assert _state["recovery"] is None
+    assert _state["settlement"] == "not-broadcast"
+
+
+def test_startup_uses_wallet_transfer_status_instead_of_assuming_settled(monkeypatch):
+    class StartupRegistry:
+        timeout = 8.0
+
+        def snapshot(self):
+            return {"device": {"address": "AA:01", "identity": "bill-saved"}}
+
+    class StartupService:
+        role = BillRole.A
+        asset_id = "rgb:usdt"
+        asset_precision = 6
+
+        def spendable_cents(self):
+            return 5500
+
+        def startup_settlement(self):
+            return "waiting-confirmations"
+
+        def pending_outbound(self):
+            return None
+
+        def close(self):
+            return None
+
+    class FakeServer:
+        def __init__(self, _binding, _handler):
+            pass
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+        def server_close(self):
+            return None
+
+    monkeypatch.setattr(
+        web_server.DeviceRegistry,
+        "from_env",
+        classmethod(lambda _cls, _role: StartupRegistry()),
+    )
+    monkeypatch.setattr(
+        web_server.RgbWebService,
+        "from_env",
+        classmethod(lambda _cls, *, gateway: StartupService()),
+    )
+    monkeypatch.setattr(
+        web_server,
+        "ThreadingHTTPServer",
+        lambda _binding, _handler: FakeServer(None, None),
+    )
+
+    web_server.main()
+
+    assert _state["settlement"] == "waiting-confirmations"
+    assert _state["status"] == "waiting-confirmations"
+    assert _state["cents"] == 5500
+
+
+def test_startup_reopens_journaled_consignment_without_a_new_send(monkeypatch):
+    class StartupRegistry:
+        timeout = 8.0
+
+        def snapshot(self):
+            return {"device": None}
+
+    class StartupService:
+        role = BillRole.A
+        asset_id = "rgb:usdt"
+        asset_precision = 6
+        journal_error = None
+
+        def spendable_cents(self):
+            return 5500
+
+        def startup_settlement(self):
+            return "settled"
+
+        def pending_outbound(self):
+            return (
+                500,
+                type(
+                    "Artifact",
+                    (),
+                    {
+                        "txid": "txid",
+                        "path": "/tmp/retained.rgbc",
+                        "sha256": "abc",
+                    },
+                )(),
+            )
+
+        def close(self):
+            return None
+
+    class FakeServer:
+        def __init__(self, _binding, _handler):
+            pass
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+        def server_close(self):
+            return None
+
+    monkeypatch.setattr(
+        web_server.DeviceRegistry,
+        "from_env",
+        classmethod(lambda _cls, _role: StartupRegistry()),
+    )
+    monkeypatch.setattr(
+        web_server.RgbWebService,
+        "from_env",
+        classmethod(lambda _cls, *, gateway: StartupService()),
+    )
+    monkeypatch.setattr(
+        web_server,
+        "ThreadingHTTPServer",
+        lambda _binding, _handler: FakeServer(None, None),
+    )
+
+    web_server.main()
+
+    assert _state["settlement"] == "broadcast"
+    assert _state["status"] == "consignment-stage-recovery-required"
+    assert _state["recovery"]["endpoint"] == "/api/rgb/retry-stage"
+    assert _state["recovery"]["retry_send"] is False
+    assert _state["recovery"]["txid"] == "txid"
