@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import threading
+import time
 from collections.abc import Callable
 from functools import wraps
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -14,6 +15,25 @@ from pathlib import Path
 from typing import Any, ParamSpec, TypeVar
 from urllib.parse import urlparse
 
+from web.check_status import (
+    ACCEPT_BANNER,
+    ACCEPTED,
+    FUNDS_NOT_LOCKED,
+    NOT_A_GUARANTEE,
+    apply_observed,
+    balance_view,
+    build_check,
+    desk_after_restart,
+    dominant_state,
+    load_checks,
+    observed_desk_state,
+    primary_observation,
+    offline_accept_report,
+    receive_spendable,
+    recipient_fingerprint,
+    save_checks,
+    settlement_key,
+)
 from web.rgb.config import BillRole
 from dock.chunk_protocol import FrameKind
 from web.device_registry import (
@@ -51,6 +71,10 @@ _state: dict[str, Any] = {
     "asset_id": os.environ.get("RGB_ASSET_ID") or None,
     "asset_precision": os.environ.get("RGB_ASSET_PRECISION") or None,
     "expected_receive_cents": None,
+    "expected_expiration": None,
+    "checks": [],
+    "pending_cents": 0,
+    "check_state": None,
 }
 
 
@@ -65,16 +89,55 @@ def _serialized_workflow(function: Callable[P, R]) -> Callable[P, R]:
     return wrapped
 
 
+def _ledger_path() -> Path | None:
+    raw = os.environ.get("CHECK_LEDGER_PATH")
+    if raw:
+        return Path(raw)
+    data = os.environ.get("RGB_DATA_DIR")
+    if data:
+        return Path(data) / "check-ledger.json"
+    return None
+
+
+def _persist_checks(checks: list[dict[str, Any]]) -> None:
+    path = _ledger_path()
+    if path is None:
+        return
+    save_checks(path, checks)
+
+
+def _store_checks(checks: list[dict[str, Any]], state: str | None) -> None:
+    view = balance_view(_state["cents"], checks)
+    _state["checks"] = checks
+    _state["pending_cents"] = view["pending_cents"]
+    _state["check_state"] = state
+    if state is not None:
+        _state["settlement"] = settlement_key(state)
+    _persist_checks(checks)
+
+
 def _bill() -> dict[str, Any]:
     device = _device_registry.snapshot() if _device_registry is not None else None
     with _state_lock:
         pending = _state["pending"]
         recovery = _state["recovery"]
+        checks = [dict(check) for check in _state["checks"]]
+        accepted = any(check.get("state") == ACCEPTED for check in checks)
         return {
             "role": _state["role"],
             "identity": _state["identity"],
             "status": _state["status"],
             "cents": _state["cents"],
+            "pending_cents": _state["pending_cents"],
+            "check_state": _state["check_state"],
+            "checks": checks,
+            "accept_banner": ACCEPT_BANNER if accepted else None,
+            "guarantees": {
+                "cancel_costs_more": False,
+                "funds_locked": False,
+                "funds_not_locked": FUNDS_NOT_LOCKED,
+                "note": NOT_A_GUARANTEE,
+            },
             "pending": dict(pending) if pending is not None else None,
             "receipts": [dict(receipt) for receipt in _state["receipts"]],
             "recovery": dict(recovery) if recovery is not None else None,
@@ -417,6 +480,7 @@ def handle_stage_invoice(
         _state["settlement"] = "not-broadcast"
         _state["recovery"] = None
         _state["expected_receive_cents"] = cents
+        _state["expected_expiration"] = outcome.expiration_timestamp
         _state["receipts"].insert(0, receipt)
     return {
         "ok": True,
@@ -467,12 +531,13 @@ def handle_plan(cents: int, service: RgbWebService | None = None) -> dict[str, A
             if prepared.received_session_id is not None
             else None
         ),
-        "confirmation_phrase": f"CONFIRM {plan.plan_id}",
+        "recipient_fingerprint": recipient_fingerprint(str(plan.recipient_id)),
         "donation": True,
         "transport_endpoints": [],
         "note": (
             f"Send ${cents / 100:.2f} USDT on Mutinynet to the tapped invoice. "
-            "Review the immutable plan and type its exact confirmation phrase."
+            "Review the immutable plan and type its exact confirmation phrase. "
+            + FUNDS_NOT_LOCKED
         ),
     }
     with _state_lock:
@@ -596,13 +661,26 @@ def handle_confirm(
                 "ble_session_id": f"0x{outcome.staged.session_id:08x}",
             }
         )
+        issued = build_check(
+            check_id=str(artifact.batch_transfer_idx),
+            amount_cents=int(pending["cents"]),
+            raw_status="waiting_counterparty",
+            direction="out",
+            from_id=_state["identity"],
+            to_id=str(pending.get("recipient_id") or ""),
+            to_fingerprint=pending.get("recipient_fingerprint"),
+            expires=pending.get("expiration_timestamp"),
+            plan_id=confirm_id,
+            txid=artifact.txid,
+            fee_sats=int(pending.get("witness_amount_sat") or 0),
+        )
         with _state_lock:
             _state["pending"] = None
             _state["cents"] = remaining_cents
             _state["status"] = "consignment-staged"
-            _state["settlement"] = "broadcast"
             _state["recovery"] = None
             _state["receipts"].insert(0, receipt)
+            _store_checks([issued, *_state["checks"]], str(issued["state"]))
         return {
             "ok": True,
             "completed": True,
@@ -712,28 +790,48 @@ def handle_import(service: RgbWebService | None = None) -> dict[str, Any]:
         }
 
     updated = {str(key): value for key, value in outcome.updated_transfers.items()}
-    statuses = set(updated.values())
-    settlement = (
-        "settled"
-        if statuses and statuses <= {"settled"}
-        else "waiting-confirmations"
-    )
-    receipt.update(
-        {
-            "status": "consignment-imported",
-            "settlement": settlement,
-            "updated_transfers": updated,
-        }
-    )
+    check_id, raw_status, state = primary_observation(updated)
     with _state_lock:
         expected = _state["expected_receive_cents"]
-        if expected is not None:
-            _state["cents"] += expected
+        expiration = _state["expected_expiration"]
+        amount = int(expected) if expected is not None else 0
+        # Import must not credit. Wallet spendable is the only balance.
+        _state["cents"] = receive_spendable(_state["cents"], amount, state or "")
         _state["expected_receive_cents"] = None
+        _state["expected_expiration"] = None
+        accepted = build_check(
+            check_id=str(check_id),
+            amount_cents=amount,
+            raw_status=raw_status,
+            direction="in",
+            expires=expiration if isinstance(expiration, int) else None,
+            to_id=_state["identity"],
+            fee_sats=0,
+            offline=offline_accept_report(
+                now=int(time.time()),
+                expiration=expiration if isinstance(expiration, int) else None,
+                payee_id=None,
+                my_id=None,
+                consignment_parsed=None,
+                signature_valid=None,
+            ),
+        )
+        if state is None:
+            state = str(accepted["state"])
+        receipt.update(
+            {
+                "status": "consignment-imported",
+                "settlement": settlement_key(state),
+                "check_state": state,
+                "updated_transfers": updated,
+                "amount_cents": amount,
+                "counts_toward_spendable": False,
+            }
+        )
         _state["status"] = "consignment-imported"
-        _state["settlement"] = settlement
         _state["recovery"] = None
         _state["receipts"].insert(0, receipt)
+        _store_checks([accepted, *_state["checks"]], state)
     return {
         "ok": True,
         "broadcast": True,
@@ -748,15 +846,19 @@ def handle_refresh(service: RgbWebService | None = None) -> dict[str, Any]:
     except Exception as exc:
         return _error(exc)
     updated = {str(key): value for key, value in updated_transfers.items()}
-    statuses = set(updated.values())
+    observed = observed_desk_state(updated)
     with _state_lock:
-        _state["cents"] = cents
-        if any(status == "settled" for status in statuses):
+        checks = apply_observed(_state["checks"], updated)
+        view = balance_view(cents, checks)
+        state = dominant_state(
+            [observed, *[str(check.get("state")) for check in checks]]
+        )
+        _state["cents"] = view["spendable_cents"]
+        if state == "SETTLED":
             _state["status"] = "settled"
-            _state["settlement"] = "settled"
-        elif statuses:
-            _state["status"] = "waiting-confirmations"
-            _state["settlement"] = "waiting-confirmations"
+        elif state is not None:
+            _state["status"] = settlement_key(state)
+        _store_checks(checks, state)
         _state["receipts"].insert(
             0,
             {
@@ -793,7 +895,7 @@ def handle_chat(
         result.setdefault(
             "reply",
             (
-                "Consignment imported; waiting for Mutinynet confirmation."
+                ACCEPT_BANNER
                 if result["ok"]
                 else result.get("error", "Consignment import needs recovery.")
             ),
@@ -827,7 +929,8 @@ def handle_chat(
         return {
             "ok": True,
             "reply": (
-                f"Bill {bill['role']} shows ${bill['cents'] / 100:.2f} "
+                f"Bill {bill['role']} spendable ${bill['cents'] / 100:.2f}. "
+                f"Pending ${bill['pending_cents'] / 100:.2f} is not spendable "
                 f"({bill['status']}, {bill['settlement']})."
             ),
             "pending": None,
@@ -1049,14 +1152,18 @@ def main() -> None:
     _device_registry = registry
     _rgb_service = service
     registered_device = registry.snapshot()["device"]
+    restored = desk_after_restart(balance_cents, load_checks(_ledger_path()))
     with _state_lock:
         _state.update(
             {
                 "role": service.role.value,
-                "status": "idle",
-                "cents": balance_cents,
+                "status": restored["status"],
+                "cents": restored["spendable_cents"],
+                "pending_cents": restored["pending_cents"],
+                "checks": restored["checks"],
+                "check_state": restored["check_state"],
                 "mode": MODE,
-                "settlement": "settled",
+                "settlement": restored["settlement"],
                 "asset_id": service.asset_id,
                 "asset_precision": service.asset_precision,
                 "identity": (

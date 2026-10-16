@@ -20,6 +20,7 @@ secrets/
 
 # RGB / Bitcoin wallet state (one bill, one datadir)
 wallet-data/
+.check-ledger*.json
 .rgb-oob/
 *.sqlite
 *.sqlite-journal
