@@ -23,6 +23,7 @@ from web.server import (
     handle_device_register,
     handle_device_scan,
     handle_import,
+    handle_refresh,
     handle_retry_stage,
     handle_send_usdt,
     handle_receive_usdt,
@@ -228,6 +229,10 @@ def reset_state(*, role: str, cents: int) -> None:
             "asset_id": "rgb:usdt",
             "asset_precision": 6,
             "expected_receive_cents": None,
+            "expected_expiration": None,
+            "checks": [],
+            "pending_cents": 0,
+            "check_state": None,
         }
     )
 
@@ -238,15 +243,16 @@ def test_bill_a_requires_exact_phrase_before_one_live_send(tmp_path):
 
     chat = handle_chat("bill for $5", service)
 
-    assert chat["pending"]["confirmation_phrase"] == "CONFIRM plan-123"
+    assert "confirmation_phrase" not in chat["pending"]
     assert chat["pending"]["transport_endpoints"] == []
+    assert chat["pending"]["recipient_fingerprint"]
     mismatch = handle_confirm("plan-123", "approve", service)
     assert mismatch["ok"] is False
     assert mismatch["broadcast"] is False
     assert _state["pending"]["id"] == "plan-123"
     assert service.confirm_calls == 0
 
-    result = handle_confirm("plan-123", "CONFIRM plan-123", service)
+    result = handle_confirm("plan-123", "CONFIRM " + chat["pending"]["id"], service)
 
     assert result["ok"] is True
     assert result["completed"] is True
@@ -268,7 +274,7 @@ def test_post_broadcast_stage_failure_uses_recovery_not_second_send(tmp_path):
 
     result = handle_confirm(
         pending["id"],
-        pending["confirmation_phrase"],
+        "CONFIRM " + pending["id"],
         service,
     )
 
@@ -303,8 +309,13 @@ def test_bill_b_stages_invoice_and_imports_received_consignment(tmp_path):
     assert imported["receipt"]["updated_transfers"] == {
         "4": "waiting_confirmations"
     }
-    assert imported["bill"]["cents"] == 4500
-    assert imported["bill"]["settlement"] == "waiting-confirmations"
+    assert imported["bill"]["cents"] == 4000
+    assert imported["bill"]["pending_cents"] == 500
+    assert imported["bill"]["check_state"] == "ACCEPTED"
+    assert imported["bill"]["settlement"] == "accepted"
+    assert imported["bill"]["checks"][0]["label"] == "ACCEPTED - NOT YET SETTLED ON-CHAIN"
+    assert imported["bill"]["checks"][0]["counts_toward_spendable"] is False
+    assert imported["bill"]["guarantees"]["cancel_costs_more"] is False
 
 
 def test_non_five_dollar_amount_is_not_confirmable(tmp_path):
@@ -407,7 +418,8 @@ def test_send_usdt_inventory_selects_invoice_read_and_confirmation(tmp_path):
     result = handle_send_usdt(500, service, invoice)
 
     assert result["ok"] is True
-    assert result["pending"]["confirmation_phrase"] == "CONFIRM plan-123"
+    assert "confirmation_phrase" not in result["pending"]
+    assert result["pending"]["id"] == "plan-123"
 
 
 def test_send_usdt_blocked_inventory_fails_before_wallet_plan(tmp_path):
@@ -530,6 +542,155 @@ def test_main_loads_registration_without_startup_ble_connect(monkeypatch):
     assert _state["identity"] == "bill-saved"
     assert service.closed is True
     assert fake_server.closed is True
+
+
+def test_refresh_failed_is_not_waiting_and_not_spendable(tmp_path):
+    reset_state(role="B", cents=4000)
+    _state["checks"] = [
+        {
+            "check_id": "4",
+            "amount_cents": 500,
+            "direction": "in",
+            "state": "ACCEPTED",
+            "label": "ACCEPTED - NOT YET SETTLED ON-CHAIN",
+            "confirmations": 0,
+            "required_confirmations": 1,
+            "counts_toward_spendable": False,
+        }
+    ]
+    _state["pending_cents"] = 500
+    service = FakeWebService(tmp_path, role=BillRole.B)
+    service.refresh_settlement = lambda: (4000, {4: "failed"})
+
+    result = handle_refresh(service)
+
+    assert result["ok"] is True
+    assert result["bill"]["cents"] == 4000
+    assert result["bill"]["pending_cents"] == 0
+    assert result["bill"]["check_state"] == "FAILED"
+    assert result["bill"]["settlement"] == "failed"
+    assert "waiting" not in result["bill"]["settlement"]
+
+
+def test_refresh_with_confirmations_stays_pending_until_settled(tmp_path):
+    reset_state(role="B", cents=4000)
+    _state["checks"] = [
+        {
+            "check_id": "4",
+            "amount_cents": 500,
+            "direction": "in",
+            "state": "ACCEPTED",
+            "confirmations": 0,
+            "required_confirmations": 1,
+            "counts_toward_spendable": False,
+        }
+    ]
+    service = FakeWebService(tmp_path, role=BillRole.B)
+    service.refresh_settlement = lambda: (4000, {4: "waiting_confirmations 1/1"})
+
+    result = handle_refresh(service)
+
+    assert result["bill"]["cents"] == 4000
+    assert result["bill"]["pending_cents"] == 500
+    assert result["bill"]["check_state"] == "SETTLING"
+    assert result["bill"]["checks"][0]["label"] == "Seen on-chain, 1/1 confirmations"
+
+
+def test_refresh_settled_status_is_not_held_back_by_a_stored_zero(tmp_path):
+    reset_state(role="B", cents=4000)
+    _state["checks"] = [
+        {
+            "check_id": "4",
+            "amount_cents": 500,
+            "direction": "in",
+            "state": "ACCEPTED",
+            "label": "ACCEPTED - NOT YET SETTLED ON-CHAIN",
+            "confirmations": 0,
+            "required_confirmations": 1,
+            "counts_toward_spendable": False,
+        }
+    ]
+    _state["pending_cents"] = 500
+    service = FakeWebService(tmp_path, role=BillRole.B)
+    service.refresh_settlement = lambda: (4500, {4: "settled"})
+
+    result = handle_refresh(service)
+
+    assert result["ok"] is True
+    assert result["bill"]["cents"] == 4500
+    assert result["bill"]["pending_cents"] == 0
+    assert result["bill"]["check_state"] == "SETTLED"
+    assert result["bill"]["checks"][0]["counts_toward_spendable"] is False
+
+
+def test_startup_rereads_pending_checks_without_crediting(monkeypatch, tmp_path):
+    from web.check_status import build_check, save_checks
+
+    ledger = tmp_path / "checks.json"
+    save_checks(
+        ledger,
+        [
+            build_check(
+                check_id="4",
+                amount_cents=500,
+                raw_status="waiting_confirmations",
+                direction="in",
+            )
+        ],
+    )
+    monkeypatch.setenv("CHECK_LEDGER_PATH", str(ledger))
+
+    class StartupRegistry:
+        timeout = 8.0
+
+        def snapshot(self):
+            return {"device": {"address": "AA:01", "identity": "bill-saved"}}
+
+    class StartupService:
+        role = BillRole.A
+        asset_id = "rgb:usdt"
+        asset_precision = 6
+
+        def spendable_cents(self):
+            return 5500
+
+        def close(self):
+            self.closed = True
+
+    class FakeServer:
+        def __init__(self, _binding, _handler):
+            pass
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+        def server_close(self):
+            pass
+
+    service = StartupService()
+    monkeypatch.setattr(
+        web_server.DeviceRegistry,
+        "from_env",
+        classmethod(lambda _cls, _role: StartupRegistry()),
+    )
+    monkeypatch.setattr(
+        web_server.RgbWebService,
+        "from_env",
+        classmethod(lambda _cls, *, gateway: service),
+    )
+    monkeypatch.setattr(
+        web_server,
+        "ThreadingHTTPServer",
+        lambda _binding, _handler: FakeServer(None, None),
+    )
+
+    web_server.main()
+
+    assert _state["cents"] == 5500
+    assert _state["pending_cents"] == 500
+    assert _state["check_state"] == "ACCEPTED"
+    assert _state["settlement"] == "accepted"
+    assert _state["checks"][0]["counts_toward_spendable"] is False
 
 
 def test_startup_429_message_does_not_echo_remote_html():

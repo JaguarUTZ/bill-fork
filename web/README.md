@@ -16,7 +16,11 @@ python -m web.server
 ```
 
 Binds the role-specific loopback host and port from the environment. On the
-current bench, A uses `127.0.0.1:8788` and B uses `127.0.0.1:8789`. Role B
+current bench, A uses `127.0.0.1:8788` and B uses `127.0.0.1:8789`. A phone
+or a second browser can stand in for the puck: paste the invoice and the
+consignment by hand. BLE stays optional. See
+[NORADIO.md](../docs/NORADIO.md) for the Mutinynet process, Docker, health,
+and CORS. Role B
 creates/stages the real witness invoice and imports the received consignment.
 Role A retrieves the tapped invoice and presents an immutable plan. Broadcast
 is unreachable until the operator types the displayed exact

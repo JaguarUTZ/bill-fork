@@ -3,146 +3,224 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Forkashi — cash bill dock</title>
-  <link rel="preload" href="/fonts/PressStart2P-Regular.ttf" as="font" type="font/ttf" crossorigin />
+  <meta name="theme-color" content="#050505" />
+  <title>FORKU2BTC — test checks on Mutinynet</title>
   <link rel="stylesheet" href="/app.css" />
 </head>
 <body>
   <a class="skip" href="#desk">Skip to desk</a>
-  <header class="topbar">
-    <div class="brand">
-      <svg class="mascot" viewBox="0 0 32 32" aria-hidden="true" shape-rendering="crispEdges">
-        <rect x="1" y="7" width="20" height="18" fill="#1a1430"/>
-        <rect x="2" y="8" width="18" height="16" fill="#f7f3e8"/>
-        <rect x="2" y="11" width="18" height="2" fill="#1f8a5b"/>
-        <rect x="4" y="16" width="7" height="2" fill="#1a1430"/>
-        <rect x="4" y="19" width="5" height="2" fill="#1a1430"/>
-        <g class="mark-coin">
-          <rect x="12" y="16" width="6" height="6" fill="#f0b429"/>
-          <rect x="13" y="17" width="4" height="4" fill="#ffe7a3"/>
-          <rect x="14" y="18" width="2" height="2" fill="#1a1430"/>
-        </g>
-        <rect x="18" y="1" width="2" height="10" fill="#d5dbe8"/>
-        <rect x="22" y="1" width="2" height="10" fill="#d5dbe8"/>
-        <rect x="26" y="1" width="2" height="10" fill="#d5dbe8"/>
-        <rect x="18" y="11" width="10" height="2" fill="#8e98ad"/>
-        <rect x="22" y="13" width="2" height="16" fill="#d5dbe8"/>
-        <rect x="22" y="27" width="2" height="2" fill="#8e98ad"/>
-      </svg>
-      <div class="brand-text">
-        <p class="kicker">Dock · live RGB tap · Mutinynet</p>
-        <h1>
-          <span class="wordmark">Forkashi</span>
-          <span class="product">Cash bill</span>
-        </h1>
-        <p id="meta">loading…</p>
-        <p class="plain">
-          Mutinynet is test money. It has no real value.
-          <a class="pixel-btn tiny" href="#card-mutinynet" data-learn="mutinynet">Pause &amp; learn</a>
-        </p>
-      </div>
+  <p class="test-banner">
+    MUTINYNET · TEST ONLY. This money is not real.
+    Honest status: public design draft. No production network.
+  </p>
+  <div class="marquee" aria-hidden="true">
+    <div class="marquee-track">
+      <span>ACCEPTED IS NOT SETTLED · FUNDS ARE NOT LOCKED · CANCEL CAN STILL HAPPEN · HIDDEN FEES 0 · MUTINYNET TEST ONLY · </span>
+      <span>ACCEPTED IS NOT SETTLED · FUNDS ARE NOT LOCKED · CANCEL CAN STILL HAPPEN · HIDDEN FEES 0 · MUTINYNET TEST ONLY · </span>
     </div>
-    <div class="top-actions">
-      <button id="sound-toggle" class="sound-toggle" type="button" aria-pressed="false">Sound: OFF</button>
-      <div class="lang-switch" role="group" aria-label="Language">
-        <button type="button" id="lang-en" class="lang" aria-pressed="true">EN</button>
-        <button type="button" id="lang-es" class="lang" aria-pressed="false">ES</button>
+  </div>
+
+  <header class="top">
+    <p class="kicker">CHECK · FORK · O2A</p>
+    <h1>FORKU2BTC</h1>
+    <p class="provisional">Provisional name. A skin on a cash check, not a new chain.</p>
+    <p id="meta">loading…</p>
+    <form class="backend" id="backend-form">
+      <label for="api-base">Backend</label>
+      <div class="backend-row">
+        <input id="api-base" name="api-base" type="text" autocomplete="off" spellcheck="false" placeholder="same origin, or https://dock.example" />
+        <button id="api-save" type="submit">Save backend</button>
       </div>
-      <a id="howto-open" class="pixel-btn" href="#howto-static" aria-label="How it works">?</a>
-    </div>
+      <p id="backend-state" data-state="offline">Backend offline. I have not reached the dock. Nothing was sent.</p>
+      <p class="dim">Mutinynet test coins only. A static page can point here. I refuse any dock that is not Mutinynet.</p>
+    </form>
   </header>
 
-  <dialog id="splash" aria-labelledby="splash-title" aria-describedby="splash-body">
-    <div class="splash-card">
-      <p id="splash-kicker" class="splash-kicker">Forkashi</p>
-      <h2 id="splash-title" tabindex="-1">Press start</h2>
-      <p id="splash-body">A practice desk for a $5 test payment. The money is not real.</p>
-      <div class="splash-actions">
-        <button id="splash-start" type="button">Press start</button>
-        <button id="splash-skip" class="secondary" type="button">Skip</button>
-        <button id="splash-sound" class="sound-toggle" type="button" aria-pressed="false">Sound: OFF</button>
-      </div>
-    </div>
-  </dialog>
+  <nav class="screens" aria-label="Check screens">
+    <button type="button" id="nav-create" data-screen="create" aria-pressed="true">Create</button>
+    <button type="button" id="nav-receive" data-screen="receive" aria-pressed="false">Receive</button>
+    <button type="button" id="nav-settle" data-screen="settle" aria-pressed="false">Settle</button>
+  </nav>
 
   <main id="desk">
-    <section id="pay-state" class="px pay-state" role="status" aria-live="polite" data-kind="loading">
-      <div class="pay-head">
-        <p class="label">Payment</p>
-        <a class="pixel-btn tiny" href="#card-settlement" data-learn="settlement">Pause &amp; learn</a>
+    <section class="balance" aria-label="Balances">
+      <div>
+        <p class="label">Spendable</p>
+        <p id="denomination">—</p>
       </div>
-      <div class="pay-row">
-        <span id="pay-icon" aria-hidden="true"></span>
-        <div>
-          <p id="pay-kicker" class="pay-kicker">Desk</p>
-          <p id="pay-title">Waiting for this desk…</p>
-          <p id="pay-detail">The payment state shows up here.</p>
+      <div>
+        <p class="label">Pending</p>
+        <p id="pending-amount" data-pending="no">—</p>
+      </div>
+      <div class="status-block">
+        <p class="label">Status</p>
+        <p id="status-chip" class="chip" data-state="">—</p>
+        <p id="status">idle</p>
+      </div>
+    </section>
+    <p class="caveat">
+      ACCEPTED - NOT YET SETTLED ON-CHAIN stays under Pending, in yellow.
+      I never add that amount to spendable.
+      I can't promise that cancelling costs the sender more than creating the check.
+      That property does not hold in this build.
+    </p>
+
+    <section id="screen-create" data-screen-panel="create" class="is-on">
+      <p class="test-banner slim">MUTINYNET · TEST ONLY. This money is not real.</p>
+      <p class="kicker">CHECK · ISSUED</p>
+      <h2>Create check</h2>
+      <p class="lede">I write a check. I hand it over in person. I cannot lock the money yet.</p>
+      <p class="honest">This check is only as good as what we can prove. Funds are NOT locked yet.</p>
+      <p id="amount" class="amount">$5.00</p>
+      <p class="dim">This desk issues a $5.00 test check. I won't pretend another amount works.</p>
+      <div class="fields">
+        <label for="recipient-name">Recipient</label>
+        <input id="recipient-name" name="recipient-name" autocomplete="off" placeholder="A name, or the invoice I scanned" />
+        <p id="recipient-fp" class="fp">Fingerprint shows up next to the name. An opaque id is not enough.</p>
+        <label for="expiry">Preview expiry</label>
+        <select id="expiry">
+          <option value="900">15 minutes</option>
+          <option value="3600">1 hour</option>
+          <option value="14400">4 hours</option>
+        </select>
+        <p class="dim">Preview only. The live expiry is whatever the dock returns. Still not a lock.</p>
+      </div>
+      <div class="actions">
+        <button id="send-usdt" type="button" disabled>Issue check (optional BLE)</button>
+      </div>
+      <p id="workflow-help">Issue check reads the invoice on this dock, then asks me to type the phrase. Optional BLE. It still needs a registered puck.</p>
+      <section class="carry" aria-labelledby="noradio-create-heading">
+        <p class="kicker">NO RADIO</p>
+        <h3 id="noradio-create-heading">Paste the invoice</h3>
+        <p class="lede">Two browser sessions. I copy the text myself. These docks do not push the consignment to each other.</p>
+        <p class="honest">I did not send this to the other desk. Copy it yourself.</p>
+        <label for="invoice-in">Invoice from the other desk</label>
+        <textarea id="invoice-in" class="carry-box" spellcheck="false" autocomplete="off"></textarea>
+        <div class="actions">
+          <button id="read-invoice" type="button" disabled>Plan from pasted invoice</button>
         </div>
-      </div>
-      <a class="text-link" href="#card-accepted" data-learn="accepted">Why isn't accepted the same as settled?</a>
-    </section>
-
-    <section class="px device-panel" aria-labelledby="device-heading">
-      <div class="device-heading-row">
-        <div>
-          <p class="label">Physical bill</p>
-          <h2 id="device-heading">Choose this dock’s bill</h2>
+        <label for="consignment-out">Consignment to copy</label>
+        <textarea id="consignment-out" class="carry-box" readonly spellcheck="false"></textarea>
+        <div class="actions">
+          <button id="copy-consignment" class="secondary" type="button">Copy consignment</button>
         </div>
-        <span id="device-badge" class="device-badge">Not registered</span>
-      </div>
-      <p class="plain">
-        The puck is the small gadget with a screen and a touch pad. This page is the laptop dock.
-        <a class="pixel-btn tiny" href="#card-puck" data-learn="puck">Pause &amp; learn</a>
-      </p>
-      <p id="device-summary" class="device-summary">
-        Scan for a nearby RgbBill advertising the authorized dock service.
-      </p>
-      <div class="device-actions">
-        <button id="scan-device" type="button">Scan</button>
-        <button id="connect-device" class="secondary" type="button" disabled>Connect</button>
-        <button id="register-device" type="button" disabled>Register selected</button>
-      </div>
-      <fieldset id="device-list" aria-live="polite">
-        <legend>Authorized nearby bills</legend>
-        <p class="empty-device-list">Select Scan to look for bills.</p>
-      </fieldset>
-      <p id="device-message" class="device-message" aria-live="polite"></p>
-      <p class="device-help">
-        Only devices advertising the RGBill dock service UUID are listed. A
-        read-only GATT check verifies identity before registration. One bill is
-        saved per dock role; transfers reconnect to it automatically.
-      </p>
+      </section>
+      <article class="genesis" aria-label="Check preview">
+        <p class="kicker">BLOCK 0 · CHECK PREVIEW</p>
+        <pre id="genesis-card">check_id: —
+amount: $5.00
+from: this dock
+to: — · fingerprint —
+expires: 15 minutes
+status: ISSUED</pre>
+        <p class="dim">Created. Not accepted. Nothing is issued until I type the phrase.</p>
+      </article>
     </section>
 
-    <section class="px note" aria-live="polite">
-      <p class="label">Wallet balance</p>
-      <p id="denomination">$0.00</p>
-      <p class="label">Technical status</p>
-      <p id="status">idle</p>
+    <section id="screen-receive" data-screen-panel="receive">
+      <p class="test-banner slim">MUTINYNET · TEST ONLY. This money is not real.</p>
+      <p class="kicker">CHECK · OFFLINE</p>
+      <h2>Receive / accept</h2>
+      <p class="lede">I can take a check in over a tap. Offline, I cannot prove the money is sitting there.</p>
+      <p class="honest">Offline I cannot prove the funds exist or are unspent.</p>
+      <p id="accept-banner" class="banner-yellow">
+        Accepted – not yet settled on-chain. The sender could still cancel until it settles.
+      </p>
+
+      <section class="carry" aria-labelledby="noradio-receive-heading">
+        <p class="kicker">NO RADIO</p>
+        <h3 id="noradio-receive-heading">Copy an invoice, paste a consignment</h3>
+        <p class="lede">I create the invoice here. The other desk pastes it. Then I paste the consignment they copy back. Accepting does not make it spendable.</p>
+        <div class="actions">
+          <button id="create-invoice" type="button" disabled>Create invoice</button>
+        </div>
+        <label for="invoice-out">Invoice to copy</label>
+        <textarea id="invoice-out" class="carry-box" readonly spellcheck="false"></textarea>
+        <div class="actions">
+          <button id="copy-invoice" class="secondary" type="button">Copy invoice</button>
+        </div>
+        <label for="consignment-in">Pasted consignment</label>
+        <textarea id="consignment-in" class="carry-box" spellcheck="false" autocomplete="off"></textarea>
+        <div class="actions">
+          <button id="accept-pasted" type="button" disabled>Accept pasted consignment</button>
+        </div>
+      </section>
+
+      <section class="px device-panel" aria-labelledby="device-heading">
+        <div class="device-heading-row">
+          <div>
+            <p class="label">Optional BLE</p>
+            <h3 id="device-heading">Find the other check</h3>
+          </div>
+          <span id="device-badge" class="device-badge">Not registered</span>
+        </div>
+        <p id="device-summary" class="device-summary">
+          Scan for a nearby RgbBill. The tap is BLE. I don't run a phone app for it.
+        </p>
+        <div class="device-actions">
+          <button id="scan-device" type="button" disabled>Scan</button>
+          <button id="connect-device" class="secondary" type="button" disabled>Connect</button>
+          <button id="register-device" type="button" disabled>Register selected</button>
+        </div>
+        <fieldset id="device-list" aria-live="polite">
+          <legend>Nearby checks</legend>
+          <p class="empty-device-list">Select Scan to look.</p>
+        </fieldset>
+        <p id="device-message" class="device-message" aria-live="polite"></p>
+        <p class="device-help dim">
+          Only devices advertising the RGBill dock service are listed.
+          Connect is a read-only identity check. One check is saved per dock role.
+        </p>
+      </section>
+
+      <h3 class="mono-title">Local checks</h3>
+      <ul id="offline-checks" class="checks">
+        <li data-check="signature_valid"><span class="mark">✗</span> signature valid — I cannot prove the signature on this desk.</li>
+        <li data-check="not_expired"><span class="mark">✗</span> not expired — I haven't been given an expiry yet.</li>
+        <li data-check="payee_is_me"><span class="mark">✗</span> payee = me — I can't show that until both ids are here.</li>
+        <li data-check="consignment_parses"><span class="mark">✗</span> consignment parses — I cannot prove the consignment parses offline.</li>
+      </ul>
+      <p class="honest">Offline I cannot prove the funds exist or are unspent.</p>
+      <div class="actions">
+        <button id="receive-usdt" type="button" disabled>Accept over BLE (optional)</button>
+      </div>
+
+      <section id="pending-ledger" aria-labelledby="pending-heading">
+        <p class="kicker">PENDING</p>
+        <h3 id="pending-heading">Pending</h3>
+        <p class="dim">Yellow means not settled. These amounts are not spendable.</p>
+        <ul id="pending-list" class="ledger">
+          <li class="empty">No pending checks.</li>
+        </ul>
+      </section>
     </section>
 
-    <section class="px workflow" aria-labelledby="workflow-heading">
-      <p class="label">One next action</p>
-      <h2 id="workflow-heading">Move $5.00 USDT</h2>
-      <p class="plain">
-        This $5 test payment is a check: a promise you hand over in person.
-        <a class="pixel-btn tiny" href="#card-check" data-learn="check">Pause &amp; learn</a>
-      </p>
-      <ol class="steps" id="step-rail" aria-label="How a payment moves">
-        <li data-step="1"><span class="step-label">Receive</span><span class="cursor" aria-hidden="true"></span></li>
-        <li data-step="2"><span class="step-label">Tap</span><span class="cursor" aria-hidden="true"></span></li>
-        <li data-step="3"><span class="step-label">Confirm</span><span class="cursor" aria-hidden="true"></span></li>
-        <li data-step="4"><span class="step-label">Settle</span><span class="cursor" aria-hidden="true"></span></li>
-      </ol>
-      <p id="workflow-help">
-        Connect verifies what is physically stored on the bill before any read or write.
-      </p>
-      <div class="workflow-actions">
-        <button id="send-usdt" type="button">Send USDT</button>
-        <button id="receive-usdt" type="button">Receive USDT</button>
+    <section id="screen-settle" data-screen-panel="settle">
+      <p class="test-banner slim">MUTINYNET · TEST ONLY. This money is not real.</p>
+      <p class="kicker">LATER GATE</p>
+      <h2>Settle later</h2>
+      <p class="lede">When I'm online I watch the witness, import the consignment, and count confirmations. Green is settled. Red is a real failure. Yellow is still not mine to spend.</p>
+      <p id="settle-detail" class="mono-block">Nothing is settling.</p>
+      <div class="actions">
+        <button id="settle-check" type="button" disabled>Settle</button>
       </div>
-      <p id="workflow-message" aria-live="polite"></p>
+      <article class="night" aria-labelledby="night-heading">
+        <p class="kicker">SETTLEMENT NIGHT</p>
+        <h3 id="night-heading">Settlement Night</h3>
+        <table id="settlement-night">
+          <tbody>
+            <tr><th scope="row">in</th><td id="night-in">0.00 USDT</td></tr>
+            <tr><th scope="row">out</th><td id="night-out">0.00 USDT</td></tr>
+            <tr><th scope="row">fees</th><td id="night-fees">0 sats</td></tr>
+            <tr><th scope="row">Hidden fees</th><td>0 sats</td></tr>
+          </tbody>
+        </table>
+        <p class="dim">I don't price the check in sats. No price feed. Hidden fees stay 0.</p>
+        <ul id="settled-list" class="ledger"></ul>
+      </article>
     </section>
+
+    <p id="workflow-message" aria-live="polite"></p>
 
     <section class="px chat">
       <details>
@@ -155,141 +233,39 @@
         </form>
       </details>
     </section>
-
-    <section class="px static-help" id="static-help">
-      <h2>Pause and learn</h2>
-      <p>Game paused. Nothing is sent while you read.</p>
-      <details id="card-check">
-        <summary>What is a "check"?</summary>
-        <p>A check is a promise to pay that you hand to someone in person. It says "I will pay you $5."</p>
-        <p>In this app, the check is a $5 USDT test payment.</p>
-      </details>
-      <details id="card-puck">
-        <summary>What is a "puck"?</summary>
-        <p>A puck is the small gadget with a screen and a touch pad. People also call it the bill.</p>
-        <p>It carries the payment from one person to the other over Bluetooth, tap to tap.</p>
-        <p>It does not hold secret keys. The laptop dock does the wallet work.</p>
-      </details>
-      <details id="card-settlement">
-        <summary>What is "settlement"?</summary>
-        <p>Settlement is the last step. The payment is written down on the Bitcoin test network, Mutinynet.</p>
-        <p>Until that happens, the payment is not final.</p>
-      </details>
-      <details id="card-mutinynet">
-        <summary>What is Mutinynet / "test money"?</summary>
-        <p>Mutinynet is a practice network. The money on it has no real value.</p>
-        <p>You use it to learn the steps without risking real money.</p>
-      </details>
-      <details id="card-phrase">
-        <summary>What does the typed confirmation phrase do?</summary>
-        <p>It is a speed bump. You must type the exact words before money can be sent.</p>
-        <p>That way a stray click cannot send the payment.</p>
-      </details>
-      <details id="card-accepted">
-        <summary>What are "accepted" and "settled"?</summary>
-        <p>Accepted means you have the check. Settled means the blockchain has confirmed it. They are not the same.</p>
-        <p>Accepted — not yet settled on-chain means you have the check, and the blockchain has not confirmed it yet.</p>
-        <p>In this test version, the receiving dock still needs internet to import the check. Later versions aim to let you accept a check with no internet and settle afterward.</p>
-        <p>Why isn't accepted the same as settled? Until the blockchain confirms the payment, the sender could in theory cancel it by spending the same coins somewhere else.</p>
-      </details>
-    </section>
-
-    <details class="px" id="howto-static">
-      <summary>How it works</summary>
-      <ol>
-        <li>Receiver picks Receive. The person who will get the money presses Receive USDT on their dock.</li>
-        <li>Tap the bills together. Hold the two pucks so they touch. They pass the check over Bluetooth.</li>
-        <li>Sender types the phrase. The person who pays types the exact words. A wrong phrase sends nothing.</li>
-        <li>Wait for settlement. Accepted means the check arrived. Settled means the test network confirmed it.</li>
-      </ol>
-    </details>
   </main>
 
   <footer class="notice">
-    <h2>Notice</h2>
-    <p>Based on RGB cash bill by Edwin Kestler (github.com/EdwinKestler/bill). Forkashi skin by JaguarUTZ.</p>
-    <p>Press Start 2P © 2012 The Press Start 2P Project Authors (Cody Boisclair), with Reserved Font Name “Press Start 2P”. Licensed under the SIL Open Font License 1.1 (fonts/OFL.txt).</p>
-    <p>All sounds are generated in the browser. Original composition. No audio files.</p>
+    <p>Built on Edwin Kestler's bill / O2A.</p>
+    <p>No upstream license in this fork. Ask Edwin before redistributing.</p>
+    <p>
+      Anton, Space Mono, and Inter are on this page under the SIL Open Font
+      License 1.1 (fonts/OFL-Anton.txt, fonts/OFL-SpaceMono.txt, fonts/OFL-Inter.txt).
+    </p>
   </footer>
 
   <noscript>
-    <p class="noscript-note">Scripts are off. You can still read the guide above. Scanning and sending need JavaScript.</p>
+    <p class="noscript-note">Scripts are off. You can still read the three screens. Scanning and issuing need JavaScript.</p>
   </noscript>
 
   <dialog id="confirm">
     <form method="dialog" id="confirm-form">
+      <p class="kicker">TYPE IT</p>
       <h2>Confirm Mutinynet broadcast</h2>
       <p id="confirm-note"></p>
       <p class="confirm-help">
-        Nothing is sent until you type the phrase exactly.
-        <a class="pixel-btn tiny" href="#card-phrase" data-learn="phrase">Pause &amp; learn</a>
+        Nothing is sent until you type the phrase exactly. I made the phrase on this page from the plan id. The server does not hand it back.
       </p>
+      <p class="honest">This check is only as good as what we can prove. Funds are NOT locked yet.</p>
       <pre id="confirm-plan"></pre>
       <label for="confirmation-phrase">Type the exact confirmation phrase</label>
-      <input
-        id="confirmation-phrase"
-        name="confirmation-phrase"
-        autocomplete="off"
-        spellcheck="false"
-      />
+      <input id="confirmation-phrase" name="confirmation-phrase" autocomplete="off" spellcheck="false" />
       <menu>
-        <button value="cancel" type="submit">Cancel</button>
+        <button value="cancel" class="secondary" type="submit">Cancel</button>
         <button id="approve" value="default" type="submit">Broadcast once</button>
       </menu>
     </form>
   </dialog>
-
-  <dialog id="learn-dialog" aria-labelledby="learn-pause learn-title">
-    <p id="learn-kicker" class="pause-kicker">Paused</p>
-    <p id="learn-pause" class="pause-banner">Game paused. Nothing is sent while you read.</p>
-    <h2 id="learn-title" tabindex="-1"></h2>
-    <div id="learn-body"></div>
-    <button id="learn-close" type="button">Close</button>
-  </dialog>
-
-  <dialog id="howto-dialog" aria-labelledby="howto-title">
-    <h2 id="howto-title" tabindex="-1">How it works</h2>
-    <p id="howto-intro"></p>
-    <ol id="howto-list"></ol>
-    <button id="howto-close" type="button">Close</button>
-  </dialog>
-
-  <div id="howto-arts" hidden>
-    <svg class="pixel-art" viewBox="0 0 32 32" aria-hidden="true" shape-rendering="crispEdges">
-      <rect width="32" height="32" fill="#16122e"/>
-      <rect x="8" y="3" width="16" height="8" fill="#f0b429"/>
-      <rect x="14" y="11" width="4" height="4" fill="#f7f3e8"/>
-      <rect x="7" y="16" width="18" height="12" fill="#f7f3e8"/>
-      <rect x="7" y="16" width="18" height="2" fill="#1a1430"/>
-      <rect x="10" y="21" width="12" height="3" fill="#1f8a5b"/>
-    </svg>
-    <svg class="pixel-art" viewBox="0 0 32 32" aria-hidden="true" shape-rendering="crispEdges">
-      <rect width="32" height="32" fill="#16122e"/>
-      <rect x="1" y="8" width="12" height="16" fill="#f7f3e8"/>
-      <rect x="1" y="8" width="12" height="2" fill="#1a1430"/>
-      <rect x="19" y="8" width="12" height="16" fill="#f7f3e8"/>
-      <rect x="19" y="8" width="12" height="2" fill="#1a1430"/>
-      <rect x="14" y="14" width="4" height="4" fill="#f0b429"/>
-    </svg>
-    <svg class="pixel-art" viewBox="0 0 32 32" aria-hidden="true" shape-rendering="crispEdges">
-      <rect width="32" height="32" fill="#16122e"/>
-      <rect x="2" y="10" width="28" height="12" fill="#1a1430"/>
-      <rect x="4" y="12" width="24" height="8" fill="#f7f3e8"/>
-      <rect x="6" y="14" width="3" height="4" fill="#1a1430"/>
-      <rect x="11" y="14" width="3" height="4" fill="#1a1430"/>
-      <rect class="blink" x="16" y="14" width="3" height="4" fill="#1f8a5b"/>
-    </svg>
-    <svg class="pixel-art" viewBox="0 0 32 32" aria-hidden="true" shape-rendering="crispEdges">
-      <rect width="32" height="32" fill="#16122e"/>
-      <rect x="2" y="12" width="6" height="6" fill="#f7f3e8"/>
-      <rect x="13" y="12" width="6" height="6" fill="#f7f3e8"/>
-      <rect x="24" y="12" width="6" height="6" fill="#b6f3d4"/>
-      <rect x="8" y="14" width="5" height="2" fill="#f0b429"/>
-      <rect x="19" y="14" width="5" height="2" fill="#f0b429"/>
-      <rect x="25" y="14" width="2" height="2" fill="#0e3d2a"/>
-      <rect x="27" y="16" width="2" height="2" fill="#0e3d2a"/>
-    </svg>
-  </div>
 
   <script src="/copy.js"></script>
   <script src="/skin.js"></script>
