@@ -21,11 +21,79 @@ const recipientName = document.getElementById("recipient-name");
 const recipientFp = document.getElementById("recipient-fp");
 const expiry = document.getElementById("expiry");
 
+const OFFLINE_COPY = "Backend offline. I have not reached the dock. Nothing was sent.";
+const COPY_YOURSELF = "I did not send this to the other desk. Copy it yourself.";
+const API_STORAGE_KEY = "forku-api-base";
+
 let pendingId = null;
 let selectedDevice = null;
 let activeDevice = null;
 let activeRole = null;
 let latestBill = null;
+let backendOnline = false;
+let handcarryPlan = false;
+let pinnedBase = null;
+
+function storedBase() {
+  try {
+    return localStorage.getItem(API_STORAGE_KEY) || "";
+  } catch (error) {
+    return "";
+  }
+}
+
+function apiBase() {
+  if (pinnedBase !== null) return String(pinnedBase).replace(/\/$/, "");
+  const params = new URLSearchParams(window.location.search);
+  const fromQuery = (params.get("api") || "").trim();
+  if (fromQuery) return fromQuery.replace(/\/$/, "");
+  if (window.FORKU_API_BASE) return String(window.FORKU_API_BASE).replace(/\/$/, "");
+  return storedBase().replace(/\/$/, "");
+}
+
+function api(path) {
+  const base = apiBase();
+  return base ? base + path : path;
+}
+
+function markBackend(state, message) {
+  backendOnline = state === "online";
+  const el = document.getElementById("backend-state");
+  if (el) {
+    el.dataset.state = state;
+    el.textContent = message;
+  }
+  if (!backendOnline) {
+    const denomination = document.getElementById("denomination");
+    const pendingAmount = document.getElementById("pending-amount");
+    if (denomination) denomination.textContent = "—";
+    if (pendingAmount) {
+      pendingAmount.textContent = "—";
+      pendingAmount.dataset.pending = "no";
+    }
+  }
+  gate(backendOnline ? latestBill : null);
+}
+
+function gate(bill) {
+  const online = backendOnline && !!bill;
+  const role = online ? bill.role : null;
+  const registered = !!(online && bill.device && bill.device.registered);
+  if (sendUsdt) sendUsdt.disabled = !(online && role === "A" && registered);
+  if (receiveUsdt) receiveUsdt.disabled = !(online && role === "B" && registered);
+  const readInvoice = document.getElementById("read-invoice");
+  const createInvoice = document.getElementById("create-invoice");
+  const acceptPasted = document.getElementById("accept-pasted");
+  if (readInvoice) readInvoice.disabled = !(online && role === "A");
+  if (createInvoice) createInvoice.disabled = !(online && role === "B");
+  if (acceptPasted) acceptPasted.disabled = !(online && role === "B");
+  if (settleCheck) settleCheck.disabled = !online;
+  if (scanDevice) scanDevice.disabled = !online;
+  if (!online) {
+    connectDevice.disabled = true;
+    registerDevice.disabled = true;
+  }
+}
 
 function money(cents) {
   return "$" + (Number(cents || 0) / 100).toFixed(2);
@@ -199,7 +267,19 @@ function chipState(bill) {
 }
 
 async function refresh() {
-  const bill = await (await fetch("/api/bill")).json();
+  if (!backendOnline) {
+    markBackend("offline", OFFLINE_COPY);
+    return;
+  }
+  let bill;
+  try {
+    const response = await fetch(api("/api/bill"));
+    if (!response.ok) throw new Error("bill");
+    bill = await response.json();
+  } catch (error) {
+    markBackend("offline", OFFLINE_COPY);
+    return;
+  }
   latestBill = bill;
   document.getElementById("denomination").textContent = money(bill.cents);
   const pendingAmount = document.getElementById("pending-amount");
@@ -222,13 +302,11 @@ async function refresh() {
   renderDevice(bill.device);
   renderLists(bill);
   activeRole = bill.role;
-  const registered = !!(bill.device && bill.device.registered);
-  sendUsdt.disabled = bill.role !== "A" || !registered;
-  receiveUsdt.disabled = bill.role !== "B" || !registered;
   document.getElementById("workflow-help").textContent =
     bill.role === "A"
-      ? "Issue check reads the invoice on this dock, then asks me to type the phrase."
-      : "Accept check stages an empty invoice, or imports a consignment that was tapped over.";
+      ? "Paste an invoice, or use optional BLE after the puck is registered. Then type the phrase."
+      : "Create an invoice and copy it, or accept a pasted consignment. Optional BLE still needs a registered puck.";
+  gate(bill);
   if (bill.pending) await renderGenesis(bill.pending);
   else await renderGenesis(null);
 }
@@ -312,7 +390,7 @@ function renderCandidates(devices) {
 }
 
 async function postDevice(path, payload) {
-  const response = await fetch(path, {
+  const response = await fetch(api(path), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload || {}),
@@ -372,7 +450,7 @@ async function runWorkflow(path) {
   receiveUsdt.disabled = true;
   workflowMessage.textContent = "Inspecting the registered check…";
   try {
-    const response = await fetch(path, {
+    const response = await fetch(api(path), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ cents: 500 }),
@@ -400,7 +478,7 @@ if (settleCheck) {
     settleCheck.disabled = true;
     workflowMessage.textContent = "Watching the witness…";
     try {
-      const response = await fetch("/api/rgb/refresh", {
+      const response = await fetch(api("/api/rgb/refresh"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: "{}",
@@ -437,6 +515,7 @@ registerDevice.addEventListener("click", async function () {
 
 function showConfirm(pending) {
   pendingId = pending.id;
+  handcarryPlan = pending.handcarry === true;
   const phrase = confirmationPhraseFor(pending);
   const typed = recipientName ? recipientName.value.trim() : "";
   confirmNote.textContent =
@@ -465,7 +544,7 @@ form.addEventListener("submit", async function (event) {
   if (!value) return;
   line("you", value);
   text.value = "";
-  const res = await fetch("/api/chat", {
+  const res = await fetch(api("/api/chat"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text: value }),
@@ -480,12 +559,13 @@ confirmForm.addEventListener("submit", async function (event) {
   const submitter = event.submitter;
   if (submitter && submitter.id === "approve" && pendingId) {
     event.preventDefault();
-    const res = await fetch("/api/confirm", {
+    const res = await fetch(api("/api/confirm"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         id: pendingId,
         phrase: confirmationPhrase.value,
+        handcarry: handcarryPlan,
       }),
     });
     const data = await res.json();
@@ -493,14 +573,20 @@ confirmForm.addEventListener("submit", async function (event) {
       dialog.close();
       pendingId = null;
       confirmationPhrase.value = "";
+      if (data.handcarry && data.handcarry.body) {
+        const out = document.getElementById("consignment-out");
+        if (out) out.value = data.handcarry.body;
+      }
     }
     line(
       "bot",
-      data.ok && data.completed
-        ? "Broadcast complete and exact consignment staged over BLE. Status: ISSUED. Created. Not accepted."
-        : data.ok && data.recovery_required
-          ? "Broadcast complete. Consignment retained; use retry stage only."
-          : data.error,
+      data.handcarry
+        ? data.handcarry.note || COPY_YOURSELF
+        : data.ok && data.completed
+          ? "Broadcast complete and exact consignment staged over BLE. Status: ISSUED. Created. Not accepted."
+          : data.ok && data.recovery_required
+            ? "Broadcast complete. Consignment retained; use retry stage only."
+            : data.error,
     );
     await refresh();
   }
@@ -512,7 +598,7 @@ dialog.addEventListener("close", async function () {
     pendingId = null;
     confirmationPhrase.value = "";
     if (cancelledId) {
-      await fetch("/api/cancel", {
+      await fetch(api("/api/cancel"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: cancelledId }),
@@ -534,4 +620,163 @@ if (expiry) {
   });
 }
 
-refresh();
+async function postJson(path, payload) {
+  const response = await fetch(api(path), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload || {}),
+  });
+  return response.json();
+}
+
+async function copyValue(elementId) {
+  const field = document.getElementById(elementId);
+  const value = field ? field.value : "";
+  if (!value) {
+    workflowMessage.textContent = "Nothing to copy yet.";
+    return;
+  }
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(value);
+      workflowMessage.textContent = COPY_YOURSELF;
+      return;
+    }
+  } catch (error) {
+    workflowMessage.textContent = COPY_YOURSELF;
+    return;
+  }
+  workflowMessage.textContent = COPY_YOURSELF;
+}
+
+async function probeBackend() {
+  markBackend("checking", "Checking the dock…");
+  try {
+    const response = await fetch(api("/api/health"), { cache: "no-store" });
+    if (!response.ok) throw new Error("health");
+    const health = await response.json();
+    const coinsOk = !health.coins || health.coins === "mutinynet-test-only";
+    if (health.mainnet === true || health.network !== "mutinynet" || !coinsOk) {
+      markBackend(
+        "offline",
+        "This dock is not Mutinynet test coins. I will not spend. Nothing was sent.",
+      );
+      return null;
+    }
+    if (health.ok !== true || health.wallet_open === false) {
+      markBackend(
+        "offline",
+        "The dock answered, but the wallet is not open. Nothing was sent.",
+      );
+      return null;
+    }
+    markBackend(
+      "online",
+      "Dock reached. Mutinynet test coins only. Reaching the dock is not a settlement.",
+    );
+    return health;
+  } catch (error) {
+    markBackend("offline", OFFLINE_COPY);
+    return null;
+  }
+}
+
+const readInvoice = document.getElementById("read-invoice");
+if (readInvoice) {
+  readInvoice.addEventListener("click", async function () {
+    const invoice = document.getElementById("invoice-in").value.trim();
+    readInvoice.disabled = true;
+    workflowMessage.textContent = "Planning from the pasted invoice. Nothing is broadcast yet.";
+    try {
+      const data = await postJson("/api/noradio/plan", { cents: 500, invoice: invoice });
+      workflowMessage.textContent = data.reply || data.error || "Plan step finished.";
+      line("bot", workflowMessage.textContent);
+      if (data.pending) showConfirm(data.pending);
+    } catch (error) {
+      workflowMessage.textContent = OFFLINE_COPY;
+      markBackend("offline", OFFLINE_COPY);
+    } finally {
+      await refresh();
+    }
+  });
+}
+
+const createInvoice = document.getElementById("create-invoice");
+if (createInvoice) {
+  createInvoice.addEventListener("click", async function () {
+    createInvoice.disabled = true;
+    workflowMessage.textContent = "Creating an invoice on this desk only.";
+    try {
+      const data = await postJson("/api/noradio/invoice", { cents: 500 });
+      const carried = data.handcarry || {};
+      const field = document.getElementById("invoice-out");
+      if (field && carried.invoice) field.value = carried.invoice;
+      workflowMessage.textContent = carried.note || data.reply || data.error || COPY_YOURSELF;
+      line("bot", workflowMessage.textContent);
+    } catch (error) {
+      workflowMessage.textContent = OFFLINE_COPY;
+      markBackend("offline", OFFLINE_COPY);
+    } finally {
+      await refresh();
+    }
+  });
+}
+
+const acceptPasted = document.getElementById("accept-pasted");
+if (acceptPasted) {
+  acceptPasted.addEventListener("click", async function () {
+    const encoded = document.getElementById("consignment-in").value.trim();
+    acceptPasted.disabled = true;
+    workflowMessage.textContent = "Importing the pasted consignment. This does not make it spendable.";
+    try {
+      const data = await postJson("/api/noradio/import", { consignment_b64: encoded });
+      workflowMessage.textContent = data.reply || data.error || "Import finished.";
+      line("bot", workflowMessage.textContent);
+    } catch (error) {
+      workflowMessage.textContent = OFFLINE_COPY;
+      markBackend("offline", OFFLINE_COPY);
+    } finally {
+      await refresh();
+    }
+  });
+}
+
+const copyInvoice = document.getElementById("copy-invoice");
+if (copyInvoice) {
+  copyInvoice.addEventListener("click", function () {
+    copyValue("invoice-out");
+  });
+}
+const copyConsignment = document.getElementById("copy-consignment");
+if (copyConsignment) {
+  copyConsignment.addEventListener("click", function () {
+    copyValue("consignment-out");
+  });
+}
+
+const backendForm = document.getElementById("backend-form");
+if (backendForm) {
+  const apiField = document.getElementById("api-base");
+  if (apiField && !apiField.value) apiField.value = apiBase();
+  backendForm.addEventListener("submit", async function (event) {
+    event.preventDefault();
+    const value = apiField.value.trim().replace(/\/$/, "");
+    pinnedBase = value;
+    try {
+      if (value) localStorage.setItem(API_STORAGE_KEY, value);
+      else localStorage.removeItem(API_STORAGE_KEY);
+    } catch (error) {
+      /* private mode can refuse storage; the field still applies for this page */
+    }
+    latestBill = null;
+    const health = await probeBackend();
+    if (health) await refresh();
+  });
+}
+
+async function boot() {
+  const health = await probeBackend();
+  if (health) await refresh();
+}
+
+boot();

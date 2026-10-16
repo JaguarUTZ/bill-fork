@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-from dock.chunk_protocol import MAX_TRANSFER_BYTES
+from dock.chunk_protocol import MAX_TRANSFER_BYTES, FrameKind
 from web.rgb.adapter import ConsignmentArtifact
 from web.rgb.backend import ReceiveIntent
 from web.rgb.config import BillRole, RgbSettings, SettingsError
@@ -63,6 +63,25 @@ class ImportOutcome:
     received: ReceivedArtifact
     updated_transfers: Mapping[int, str] | None
     error: str | None = None
+
+
+@dataclass(frozen=True)
+class HandcarryInvoice:
+    """An invoice the operator copies. This process does not deliver it."""
+
+    cents: int
+    invoice: str
+    sha256: str
+    expiration_timestamp: int
+    batch_transfer_idx: int
+
+
+@dataclass(frozen=True)
+class HandcarrySend:
+    """A consignment the operator copies after a confirmed broadcast."""
+
+    consignment: ConsignmentArtifact
+    payload: bytes
 
 
 class RgbWebService:
@@ -318,6 +337,140 @@ class RgbWebService:
             updated = self.flow.adapter.refresh_transfers()
             balance = self.flow.adapter.spendable_balance(self.asset_id)
         return self.cents_from_base_units(balance), updated
+
+    def issue_handcarry_invoice(
+        self, cents: int, *, expires_in_seconds: int = 3600
+    ) -> HandcarryInvoice:
+        """Create a receive invoice and stop. The operator carries the text."""
+
+        if self.role is not BillRole.B:
+            raise RgbWebError(
+                "only Bill B may create a receive invoice",
+                retryable=False,
+                broadcast=False,
+            )
+        self.amount_base_units(cents)
+        with self._lock:
+            intent, artifact = self.flow.create_invoice_artifact(
+                asset_id=self.asset_id,
+                expires_in_seconds=expires_in_seconds,
+            )
+            invoice = artifact.path.read_text(encoding="utf-8")
+            self._pending_invoice = (cents, intent, artifact)
+            return HandcarryInvoice(
+                cents,
+                invoice,
+                artifact.sha256,
+                intent.expiration_timestamp,
+                intent.batch_transfer_idx,
+            )
+
+    def plan_handcarry(
+        self,
+        cents: int,
+        invoice_text: str,
+        *,
+        expires_in_seconds: int = 900,
+    ) -> InvoiceTransferPlan:
+        """Plan a send from an invoice the operator pasted. No BLE read."""
+
+        if self.role is not BillRole.A:
+            raise RgbWebError(
+                "only Bill A may prepare a send plan",
+                retryable=False,
+                broadcast=False,
+            )
+        text = invoice_text.strip()
+        if not text or any(char in text for char in "\n\r"):
+            raise RgbWebError(
+                "paste one invoice line",
+                retryable=True,
+                broadcast=False,
+            )
+        amount = self.amount_base_units(cents)
+        with self._lock:
+            artifact = self.flow.store.persist(FrameKind.INVOICE, text.encode("utf-8"))
+            prepared = self.flow.receive_and_plan_invoice(
+                expected_asset_id=self.asset_id,
+                amount=amount,
+                expires_in_seconds=expires_in_seconds,
+                invoice_path=artifact.path,
+            )
+            self._planned_cents[prepared.plan.plan_id] = cents
+            return prepared
+
+    def confirm_handcarry(self, plan_id: str, phrase: str) -> HandcarrySend:
+        """Broadcast once, then return the consignment bytes. No BLE stage."""
+
+        if self.role is not BillRole.A:
+            raise RgbWebError(
+                "only Bill A may confirm a send",
+                retryable=False,
+                broadcast=False,
+            )
+        expected = f"CONFIRM {plan_id}"
+        if phrase != expected:
+            raise RgbWebError(
+                "confirmation phrase did not match; nothing was sent",
+                retryable=True,
+                broadcast=False,
+            )
+        with self._lock:
+            try:
+                self.flow.adapter.confirm_transfer(plan_id)
+                consignment = self.flow.execute_confirmed_transfer(plan_id)
+            except Exception as exc:
+                raise RgbWebError(
+                    "send failed or has an unknown broadcast outcome; "
+                    "do not confirm or send this plan again: "
+                    f"{type(exc).__name__}: {exc}",
+                    retryable=False,
+                    broadcast=None,
+                ) from exc
+            self._planned_cents.pop(plan_id, None)
+            payload = consignment.path.read_bytes()
+            if len(payload) > self.flow.adapter.settings.max_consignment_bytes:
+                raise RgbWebError(
+                    "consignment exceeds the configured size limit",
+                    retryable=False,
+                    broadcast=True,
+                )
+            return HandcarrySend(consignment, payload)
+
+    def import_handcarry(self, payload: bytes) -> ImportOutcome:
+        """Import consignment bytes the operator pasted. No BLE read."""
+
+        if self.role is not BillRole.B:
+            raise RgbWebError(
+                "only Bill B may receive a consignment",
+                retryable=False,
+                broadcast=False,
+            )
+        if not payload:
+            raise RgbWebError(
+                "paste the consignment first",
+                retryable=True,
+                broadcast=False,
+            )
+        if len(payload) > self.flow.adapter.settings.max_consignment_bytes:
+            raise RgbWebError(
+                "consignment exceeds the configured size limit",
+                retryable=False,
+                broadcast=False,
+            )
+        with self._lock:
+            artifact = self.flow.store.persist(FrameKind.CONSIGNMENT, payload)
+            received = ReceivedArtifact(artifact, 0)
+            try:
+                updated = self.flow.import_consignment(received)
+            except Exception as exc:
+                return ImportOutcome(
+                    received,
+                    None,
+                    f"{type(exc).__name__}: {exc}",
+                )
+            self._pending_invoice = None
+            return ImportOutcome(received, updated)
 
     def close(self) -> None:
         self.flow.adapter.close()

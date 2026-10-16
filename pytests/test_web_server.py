@@ -596,6 +596,33 @@ def test_refresh_with_confirmations_stays_pending_until_settled(tmp_path):
     assert result["bill"]["checks"][0]["label"] == "Seen on-chain, 1/1 confirmations"
 
 
+def test_refresh_settled_status_is_not_held_back_by_a_stored_zero(tmp_path):
+    reset_state(role="B", cents=4000)
+    _state["checks"] = [
+        {
+            "check_id": "4",
+            "amount_cents": 500,
+            "direction": "in",
+            "state": "ACCEPTED",
+            "label": "ACCEPTED - NOT YET SETTLED ON-CHAIN",
+            "confirmations": 0,
+            "required_confirmations": 1,
+            "counts_toward_spendable": False,
+        }
+    ]
+    _state["pending_cents"] = 500
+    service = FakeWebService(tmp_path, role=BillRole.B)
+    service.refresh_settlement = lambda: (4500, {4: "settled"})
+
+    result = handle_refresh(service)
+
+    assert result["ok"] is True
+    assert result["bill"]["cents"] == 4500
+    assert result["bill"]["pending_cents"] == 0
+    assert result["bill"]["check_state"] == "SETTLED"
+    assert result["bill"]["checks"][0]["counts_toward_spendable"] is False
+
+
 def test_startup_rereads_pending_checks_without_crediting(monkeypatch, tmp_path):
     from web.check_status import build_check, save_checks
 

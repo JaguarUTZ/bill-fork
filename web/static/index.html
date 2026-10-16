@@ -25,6 +25,15 @@
     <h1>FORKU2BTC</h1>
     <p class="provisional">Provisional name. A skin on a cash check, not a new chain.</p>
     <p id="meta">loading…</p>
+    <form class="backend" id="backend-form">
+      <label for="api-base">Backend</label>
+      <div class="backend-row">
+        <input id="api-base" name="api-base" type="text" autocomplete="off" spellcheck="false" placeholder="same origin, or https://dock.example" />
+        <button id="api-save" type="submit">Save backend</button>
+      </div>
+      <p id="backend-state" data-state="offline">Backend offline. I have not reached the dock. Nothing was sent.</p>
+      <p class="dim">Mutinynet test coins only. A static page can point here. I refuse any dock that is not Mutinynet.</p>
+    </form>
   </header>
 
   <nav class="screens" aria-label="Check screens">
@@ -37,11 +46,11 @@
     <section class="balance" aria-label="Balances">
       <div>
         <p class="label">Spendable</p>
-        <p id="denomination">$0.00</p>
+        <p id="denomination">—</p>
       </div>
       <div>
         <p class="label">Pending</p>
-        <p id="pending-amount" data-pending="no">$0.00</p>
+        <p id="pending-amount" data-pending="no">—</p>
       </div>
       <div class="status-block">
         <p class="label">Status</p>
@@ -77,9 +86,25 @@
         <p class="dim">Preview only. The live expiry is whatever the dock returns. Still not a lock.</p>
       </div>
       <div class="actions">
-        <button id="send-usdt" type="button">Issue check</button>
+        <button id="send-usdt" type="button" disabled>Issue check (optional BLE)</button>
       </div>
-      <p id="workflow-help">Issue check reads the invoice on this dock, then asks me to type the phrase.</p>
+      <p id="workflow-help">Issue check reads the invoice on this dock, then asks me to type the phrase. Optional BLE. It still needs a registered puck.</p>
+      <section class="carry" aria-labelledby="noradio-create-heading">
+        <p class="kicker">NO RADIO</p>
+        <h3 id="noradio-create-heading">Paste the invoice</h3>
+        <p class="lede">Two browser sessions. I copy the text myself. These docks do not push the consignment to each other.</p>
+        <p class="honest">I did not send this to the other desk. Copy it yourself.</p>
+        <label for="invoice-in">Invoice from the other desk</label>
+        <textarea id="invoice-in" class="carry-box" spellcheck="false" autocomplete="off"></textarea>
+        <div class="actions">
+          <button id="read-invoice" type="button" disabled>Plan from pasted invoice</button>
+        </div>
+        <label for="consignment-out">Consignment to copy</label>
+        <textarea id="consignment-out" class="carry-box" readonly spellcheck="false"></textarea>
+        <div class="actions">
+          <button id="copy-consignment" class="secondary" type="button">Copy consignment</button>
+        </div>
+      </section>
       <article class="genesis" aria-label="Check preview">
         <p class="kicker">BLOCK 0 · CHECK PREVIEW</p>
         <pre id="genesis-card">check_id: —
@@ -102,10 +127,29 @@ status: ISSUED</pre>
         Accepted – not yet settled on-chain. The sender could still cancel until it settles.
       </p>
 
+      <section class="carry" aria-labelledby="noradio-receive-heading">
+        <p class="kicker">NO RADIO</p>
+        <h3 id="noradio-receive-heading">Copy an invoice, paste a consignment</h3>
+        <p class="lede">I create the invoice here. The other desk pastes it. Then I paste the consignment they copy back. Accepting does not make it spendable.</p>
+        <div class="actions">
+          <button id="create-invoice" type="button" disabled>Create invoice</button>
+        </div>
+        <label for="invoice-out">Invoice to copy</label>
+        <textarea id="invoice-out" class="carry-box" readonly spellcheck="false"></textarea>
+        <div class="actions">
+          <button id="copy-invoice" class="secondary" type="button">Copy invoice</button>
+        </div>
+        <label for="consignment-in">Pasted consignment</label>
+        <textarea id="consignment-in" class="carry-box" spellcheck="false" autocomplete="off"></textarea>
+        <div class="actions">
+          <button id="accept-pasted" type="button" disabled>Accept pasted consignment</button>
+        </div>
+      </section>
+
       <section class="px device-panel" aria-labelledby="device-heading">
         <div class="device-heading-row">
           <div>
-            <p class="label">Scan / tap</p>
+            <p class="label">Optional BLE</p>
             <h3 id="device-heading">Find the other check</h3>
           </div>
           <span id="device-badge" class="device-badge">Not registered</span>
@@ -114,7 +158,7 @@ status: ISSUED</pre>
           Scan for a nearby RgbBill. The tap is BLE. I don't run a phone app for it.
         </p>
         <div class="device-actions">
-          <button id="scan-device" type="button">Scan</button>
+          <button id="scan-device" type="button" disabled>Scan</button>
           <button id="connect-device" class="secondary" type="button" disabled>Connect</button>
           <button id="register-device" type="button" disabled>Register selected</button>
         </div>
@@ -138,7 +182,7 @@ status: ISSUED</pre>
       </ul>
       <p class="honest">Offline I cannot prove the funds exist or are unspent.</p>
       <div class="actions">
-        <button id="receive-usdt" type="button">Accept check</button>
+        <button id="receive-usdt" type="button" disabled>Accept over BLE (optional)</button>
       </div>
 
       <section id="pending-ledger" aria-labelledby="pending-heading">
@@ -158,7 +202,7 @@ status: ISSUED</pre>
       <p class="lede">When I'm online I watch the witness, import the consignment, and count confirmations. Green is settled. Red is a real failure. Yellow is still not mine to spend.</p>
       <p id="settle-detail" class="mono-block">Nothing is settling.</p>
       <div class="actions">
-        <button id="settle-check" type="button">Settle</button>
+        <button id="settle-check" type="button" disabled>Settle</button>
       </div>
       <article class="night" aria-labelledby="night-heading">
         <p class="kicker">SETTLEMENT NIGHT</p>

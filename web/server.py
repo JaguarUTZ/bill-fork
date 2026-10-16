@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -46,6 +47,7 @@ from web.rgb_web import RgbWebError, RgbWebService
 STATIC = Path(__file__).resolve().parent / "static"
 HOST = os.environ.get("DOCK_HTTP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("DOCK_HTTP_PORT", "8788"))
+MAX_JSON_BYTES = 2_000_000
 ROLE = os.environ.get("BILL_ROLE", "A").upper()
 MODE = "live-rgb-tap"
 
@@ -76,6 +78,53 @@ _state: dict[str, Any] = {
     "pending_cents": 0,
     "check_state": None,
 }
+
+
+def _allowed_origins() -> frozenset[str]:
+    """Exact origins allowed to call this dock from another site. Never '*'."""
+
+    raw = os.environ.get("DOCK_CORS_ORIGIN", "")
+    found: list[str] = []
+    for part in raw.split(","):
+        item = part.strip().rstrip("/")
+        if not item or item == "*":
+            continue
+        parsed = urlparse(item)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.path:
+            continue
+        found.append(item)
+    return frozenset(found)
+
+
+def cors_headers(origin: str | None) -> dict[str, str]:
+    if not origin or origin == "*" or origin not in _allowed_origins():
+        return {}
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Vary": "Origin",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+    }
+
+
+def health_payload() -> dict[str, Any]:
+    """Process health. This does not probe Mutinynet and never reports mainnet."""
+
+    return {
+        "ok": _rgb_service is not None,
+        "role": _state["role"],
+        "network": "mutinynet",
+        "mainnet": False,
+        "coins": "mutinynet-test-only",
+        "mode": MODE,
+        "noradio": True,
+        "ble": "optional",
+        "wallet_open": _rgb_service is not None,
+        "indexer": "not-probed",
+        "settlement": _state["settlement"],
+        "bind": f"{HOST}:{PORT}",
+        "cors_configured": bool(_allowed_origins()),
+    }
 
 
 def _serialized_workflow(function: Callable[P, R]) -> Callable[P, R]:
@@ -559,6 +608,8 @@ def handle_confirm(
     confirm_id: str,
     phrase: str,
     service: RgbWebService | None = None,
+    *,
+    handcarry: bool = False,
 ) -> dict[str, Any]:
     try:
         selected = _service(service)
@@ -581,6 +632,9 @@ def handle_confirm(
             pending = dict(pending)
 
         try:
+            if handcarry:
+                carried = selected.confirm_handcarry(confirm_id, phrase)
+                return _finish_handcarry_send(confirm_id, pending, carried)
             outcome = selected.confirm_and_stage(confirm_id, phrase)
         except Exception as exc:
             result = _error(exc)
@@ -681,14 +735,273 @@ def handle_confirm(
             _state["recovery"] = None
             _state["receipts"].insert(0, receipt)
             _store_checks([issued, *_state["checks"]], str(issued["state"]))
+    return {
+        "ok": True,
+        "completed": True,
+        "broadcast": True,
+        "recovery_required": False,
+        "receipt": receipt,
+        "bill": _bill(),
+    }
+
+
+def _finish_handcarry_send(confirm_id: str, pending: dict[str, Any], carried: Any) -> dict[str, Any]:
+    """Record a broadcast whose consignment stays here for the operator to copy."""
+
+    artifact = carried.consignment
+    payload = carried.payload
+    receipt = {
+        "id": confirm_id,
+        "action": "rgb-send",
+        "cents": pending["cents"],
+        "source": MODE,
+        "settlement": "broadcast",
+        "broadcast": True,
+        "status": "consignment-exported",
+        "txid": artifact.txid,
+        "batch_transfer_idx": artifact.batch_transfer_idx,
+        "consignment_bytes": len(payload),
+        "consignment_sha256": artifact.sha256,
+        "carried_by": "operator",
+        "retry_send": False,
+    }
+    remaining_cents = pending["balance_before_cents"] - pending["cents"]
+    issued = build_check(
+        check_id=str(artifact.batch_transfer_idx),
+        amount_cents=int(pending["cents"]),
+        raw_status="waiting_counterparty",
+        direction="out",
+        from_id=_state["identity"],
+        to_id=str(pending.get("recipient_id") or ""),
+        to_fingerprint=pending.get("recipient_fingerprint"),
+        expires=pending.get("expiration_timestamp"),
+        plan_id=confirm_id,
+        txid=artifact.txid,
+        fee_sats=int(pending.get("witness_amount_sat") or 0),
+    )
+    with _state_lock:
+        _state["pending"] = None
+        _state["cents"] = remaining_cents
+        _state["status"] = "consignment-exported"
+        _state["recovery"] = None
+        _state["receipts"].insert(0, receipt)
+        _store_checks([issued, *_state["checks"]], str(issued["state"]))
+    return {
+        "ok": True,
+        "completed": True,
+        "broadcast": True,
+        "recovery_required": False,
+        "receipt": receipt,
+        "handcarry": {
+            "kind": "consignment",
+            "encoding": "base64",
+            "sha256": artifact.sha256,
+            "byte_length": len(payload),
+            "body": base64.b64encode(payload).decode("ascii"),
+            "note": "I did not send this to the other desk. Copy it yourself.",
+        },
+        "bill": _bill(),
+    }
+
+
+@_serialized_workflow
+def handle_noradio_invoice(
+    cents: int = 500,
+    service: RgbWebService | None = None,
+) -> dict[str, Any]:
+    """Role B creates an invoice and returns the text. Nothing is delivered."""
+
+    rejected = _require_five(cents)
+    if rejected is not None:
+        return rejected
+    try:
+        issued = _service(service).issue_handcarry_invoice(cents)
+    except Exception as exc:
+        result = _error(exc)
+        result["reply"] = result["error"]
+        result["pending"] = None
+        return result
+    with _state_lock:
+        _state["status"] = "invoice-ready"
+        _state["settlement"] = "not-broadcast"
+        _state["expected_receive_cents"] = cents
+        _state["expected_expiration"] = issued.expiration_timestamp
+        _state["recovery"] = None
+    return {
+        "ok": True,
+        "broadcast": False,
+        "reply": "I did not send this to the other desk. Copy it yourself.",
+        "handcarry": {
+            "kind": "invoice",
+            "invoice": issued.invoice,
+            "sha256": issued.sha256,
+            "expiration_timestamp": issued.expiration_timestamp,
+            "cents": issued.cents,
+            "transport_endpoints": [],
+            "note": "I did not send this to the other desk. Copy it yourself.",
+        },
+        "bill": _bill(),
+    }
+
+
+@_serialized_workflow
+def handle_noradio_plan(
+    cents: int,
+    invoice_text: str,
+    service: RgbWebService | None = None,
+) -> dict[str, Any]:
+    """Role A plans from a pasted invoice. The phrase is not returned."""
+
+    rejected = _require_five(cents)
+    if rejected is not None:
+        return rejected
+    try:
+        selected = _service(service)
+        prepared = selected.plan_handcarry(cents, invoice_text)
+        balance_cents = selected.cents_from_base_units(prepared.plan.balance_before)
+    except Exception as exc:
+        result = _error(exc)
+        result["reply"] = result["error"]
+        result["pending"] = None
+        return result
+    plan = prepared.plan
+    pending = {
+        "id": plan.plan_id,
+        "action": "rgb-send",
+        "cents": cents,
+        "ticker": "USDT",
+        "asset_id": plan.asset_id,
+        "recipient_id": plan.recipient_id,
+        "amount_base_units": plan.amount,
+        "balance_before_base_units": plan.balance_before,
+        "balance_before_cents": balance_cents,
+        "witness_amount_sat": plan.witness_amount_sat,
+        "fee_rate_sat_vb": plan.fee_rate,
+        "min_confirmations": plan.min_confirmations,
+        "expiration_timestamp": plan.expiration_timestamp,
+        "invoice_sha256": prepared.artifact.sha256,
+        "recipient_fingerprint": recipient_fingerprint(str(plan.recipient_id)),
+        "donation": True,
+        "transport_endpoints": [],
+        "handcarry": True,
+        "note": (
+            f"Send ${cents / 100:.2f} USDT on Mutinynet from the pasted invoice. "
+            "Type the confirmation phrase this page builds. "
+            + FUNDS_NOT_LOCKED
+        ),
+    }
+    with _state_lock:
+        _state["pending"] = pending
+        _state["status"] = "confirmation-required"
+        _state["settlement"] = "not-broadcast"
+        _state["recovery"] = None
+    return {
+        "ok": True,
+        "reply": pending["note"],
+        "pending": pending,
+        "broadcast": False,
+        "bill": _bill(),
+    }
+
+
+def _decode_consignment(encoded: str) -> bytes:
+    try:
+        payload = base64.b64decode(encoded, validate=True)
+    except Exception as exc:
+        raise ValueError("consignment must be base64") from exc
+    if not payload:
+        raise ValueError("consignment is empty")
+    return payload
+
+
+@_serialized_workflow
+def handle_noradio_import(
+    encoded: str,
+    service: RgbWebService | None = None,
+) -> dict[str, Any]:
+    """Role B imports a pasted consignment. The amount is not spendable yet."""
+
+    try:
+        payload = _decode_consignment(encoded)
+        outcome = _service(service).import_handcarry(payload)
+    except Exception as exc:
+        result = _error(exc)
+        result.setdefault("reply", result["error"])
+        return result
+    receipt = {
+        "action": "consignment-import",
+        "source": MODE,
+        "carried_by": "operator",
+        "session_id": "none",
+        "artifact_bytes": outcome.received.artifact.size,
+        "artifact_sha256": outcome.received.artifact.sha256,
+    }
+    if outcome.updated_transfers is None:
+        receipt.update(
+            {
+                "status": "consignment-import-recovery-required",
+                "settlement": "waiting-import",
+                "error": outcome.error,
+            }
+        )
         return {
-            "ok": True,
-            "completed": True,
-            "broadcast": True,
-            "recovery_required": False,
+            "ok": False,
+            "retryable": True,
+            "broadcast": False,
+            "reply": outcome.error or "Consignment import needs recovery.",
             "receipt": receipt,
             "bill": _bill(),
         }
+    updated = {str(key): value for key, value in outcome.updated_transfers.items()}
+    check_id, raw_status, state = primary_observation(updated)
+    with _state_lock:
+        expected = _state["expected_receive_cents"]
+        expiration = _state["expected_expiration"]
+        amount = int(expected) if expected is not None else 0
+        _state["cents"] = receive_spendable(_state["cents"], amount, state or "")
+        _state["expected_receive_cents"] = None
+        _state["expected_expiration"] = None
+        accepted = build_check(
+            check_id=str(check_id),
+            amount_cents=amount,
+            raw_status=raw_status,
+            direction="in",
+            expires=expiration if isinstance(expiration, int) else None,
+            to_id=_state["identity"],
+            fee_sats=0,
+            carried_by="operator",
+            offline=offline_accept_report(
+                now=int(time.time()),
+                expiration=expiration if isinstance(expiration, int) else None,
+                payee_id=None,
+                my_id=None,
+                consignment_parsed=None,
+                signature_valid=None,
+            ),
+        )
+        if state is None:
+            state = str(accepted["state"])
+        receipt.update(
+            {
+                "status": "consignment-imported",
+                "settlement": settlement_key(state),
+                "check_state": state,
+                "updated_transfers": updated,
+                "amount_cents": amount,
+                "counts_toward_spendable": False,
+            }
+        )
+        _state["status"] = "consignment-imported"
+        _state["recovery"] = None
+        _state["receipts"].insert(0, receipt)
+        _store_checks([accepted, *_state["checks"]], state)
+    return {
+        "ok": True,
+        "broadcast": True,
+        "reply": ACCEPT_BANNER,
+        "receipt": receipt,
+        "bill": _bill(),
+    }
 
 
 @_serialized_workflow
@@ -981,6 +1294,10 @@ def _startup_error_message(exc: Exception) -> str:
     return detail
 
 
+class BodyTooLarge(ValueError):
+    """The JSON body is above MAX_JSON_BYTES. Nothing was applied."""
+
+
 class DockHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, directory=str(STATIC), **kwargs)
@@ -994,33 +1311,38 @@ class DockHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "no-store")
+        for key, value in cors_headers(self.headers.get("Origin")).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(raw)
 
     def _read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
+        if length < 0 or length > MAX_JSON_BYTES:
+            raise BodyTooLarge("request body is too large")
         if length <= 0:
             return {}
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path
+        if not path.startswith("/api/"):
+            self.send_error(404)
+            return
+        self.send_response(204)
+        for key, value in cors_headers(self.headers.get("Origin")).items():
+            self.send_header(key, value)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         if path == "/api/health":
-            self._json(
-                200,
-                {
-                    "ok": _rgb_service is not None,
-                    "role": _state["role"],
-                    "bind": f"{HOST}:{PORT}",
-                    "mode": MODE,
-                    "settlement": _state["settlement"],
-                    "device": (
-                        _device_registry.snapshot()
-                        if _device_registry is not None
-                        else None
-                    ),
-                },
+            payload = health_payload()
+            payload["device"] = (
+                _device_registry.snapshot() if _device_registry is not None else None
             )
+            self._json(200, payload)
             return
         if path == "/api/device":
             try:
@@ -1040,6 +1362,9 @@ class DockHandler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             body = self._read_json()
+        except BodyTooLarge:
+            self._json(413, {"ok": False, "error": "request body is too large"})
+            return
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
             self._json(400, {"ok": False, "error": "invalid json"})
             return
@@ -1086,7 +1411,38 @@ class DockHandler(SimpleHTTPRequestHandler):
             result = handle_confirm(
                 str(body.get("id") or ""),
                 str(body.get("phrase") or ""),
+                handcarry=bool(body.get("handcarry")),
             )
+            self._json(_status_code(result), result)
+            return
+        if path == "/api/noradio/invoice":
+            try:
+                cents = int(body.get("cents", 500))
+            except (TypeError, ValueError):
+                self._json(400, {"ok": False, "error": "cents must be an integer"})
+                return
+            result = handle_noradio_invoice(cents)
+            self._json(_status_code(result), result)
+            return
+        if path == "/api/noradio/plan":
+            try:
+                cents = int(body.get("cents", 500))
+            except (TypeError, ValueError):
+                self._json(400, {"ok": False, "error": "cents must be an integer"})
+                return
+            invoice = body.get("invoice")
+            if not isinstance(invoice, str):
+                self._json(400, {"ok": False, "error": "invoice must be a string"})
+                return
+            result = handle_noradio_plan(cents, invoice)
+            self._json(_status_code(result), result)
+            return
+        if path == "/api/noradio/import":
+            encoded = body.get("consignment_b64")
+            if not isinstance(encoded, str):
+                self._json(400, {"ok": False, "error": "consignment_b64 must be a string"})
+                return
+            result = handle_noradio_import(encoded)
             self._json(_status_code(result), result)
             return
         if path == "/api/cancel":

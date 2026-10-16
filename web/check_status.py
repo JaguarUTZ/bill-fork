@@ -327,15 +327,8 @@ def apply_observed(
         if check is None:
             continue
         required = int(check.get("required_confirmations") or 1)
-        confirmations = check.get("confirmations")
-        seen = int(confirmations) if isinstance(confirmations, int) else None
+        prior = check.get("confirmations")
         failure = failure_map.get(key, failure_map.get(str(key), check.get("failure")))
-        state = map_rgb_status(
-            raw,
-            confirmations=seen,
-            required=required,
-            failure=failure,
-        )
         parsed = parse_confirmations(raw)
         if parsed is not None:
             seen, required = parsed
@@ -345,6 +338,16 @@ def apply_observed(
                 required=required,
                 failure=failure,
             )
+        else:
+            # A bare "settled" is settled. An older zero on the desk is not a
+            # new confirmation count, so it must not keep a settled check yellow.
+            state = map_rgb_status(raw, required=required, failure=failure)
+            if state == SETTLED:
+                seen = required
+            elif state == SETTLING and isinstance(prior, int):
+                seen = prior
+            else:
+                seen = 0
         if state is None:
             continue
         if state == SETTLED:

@@ -82,8 +82,16 @@ def test_honest_status_copy_and_credit() -> None:
         "Receive / accept",
         "Settle later",
         "does not hold",
+        "Backend offline. I have not reached the dock. Nothing was sent.",
+        "I did not send this to the other desk. Copy it yourself.",
+        "Mutinynet test coins only",
+        "Plan from pasted invoice",
+        "Accept pasted consignment",
     ):
         assert line in blob
+    online = css.split('#backend-state[data-state="online"]', 1)[1].split("}", 1)[0]
+    assert "var(--cyan)" in online
+    assert "var(--green)" not in online
     assert ACCEPTED_LABEL in html
     assert CREDIT in html
     assert "Ask Edwin before redistributing" in html
